@@ -208,19 +208,19 @@ impl<T> HazardCellInner<T> {
 
     pub fn reclaim(&self) {
         let mut retired = self.retired.lock().unwrap();
-        let mut hazard_ptrs = self.hazard_ptrs.lock().unwrap();
+        let hazard_ptrs = self.hazard_ptrs.lock().unwrap();
 
-        let mut still_active = Vec::new();
+        let mut still_active = LinkedList::new();
         'outer: while let Some(node) = retired.pop_front() {
             for hazard_ptr in hazard_ptrs.iter() {
                 if std::ptr::eq(node.0.as_ptr(), hazard_ptr.load(Ordering::SeqCst)) {
-                    still_active.push(node);
+                    still_active.push_back(node);
                     continue 'outer;
                 }
             }
         }
 
-        *retired = LinkedList::from(still_active);
+        *retired = still_active;
     }
 }
 

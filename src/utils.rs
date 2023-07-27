@@ -205,7 +205,7 @@ impl<T> LinkedList<T> {
         self.head.is_null()
     }
 
-    pub fn iter(&mut self) -> Iter<T> {
+    pub fn iter(&self) -> Iter<T> {
         Iter {
             head: self.head,
             tail: self.tail,
