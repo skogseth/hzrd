@@ -33,14 +33,14 @@ impl<T> HzrdCell<T> {
         }
     }
 
-    pub fn get(&self) -> HzrdCellHandle<'_, T> {
+    pub fn get(&mut self) -> HzrdCellHandle<'_, T> {
         // SAFETY: These are only ever grabbed as shared
         let core = unsafe { self.inner.as_ref() };
 
-        // SAFETY: Good?
+        // SAFETY: We have exclusive access to this hazard ptr
         let ptr_to_hazard_ptr = unsafe { Node::get_from_ptr(self.node_ptr) };
 
-        // SAFETY: Good right?
+        // SAFETY: Same as above
         let hazard_ptr = unsafe { &*ptr_to_hazard_ptr };
 
         let mut ptr = core.value.load(Ordering::SeqCst);
@@ -66,22 +66,24 @@ impl<T> HzrdCell<T> {
     }
 
     pub fn set(&self, value: T) {
-        let new_ptr = Box::into_raw(Box::new(value));
-
         // SAFETY: Only shared references to this are allowed
         let core = unsafe { self.inner.as_ref() };
-
-        // SAFETY: Ptr must at this point be non-null
-        let old_raw_ptr = core.value.swap(new_ptr, Ordering::SeqCst);
-        let old_ptr = unsafe { NonNull::new_unchecked(old_raw_ptr) };
-
+        let old_ptr = core.swap(value);
         core.retired.lock().unwrap().push_back(RetiredPtr(old_ptr));
     }
 
+    /// Reclaim available memory
     pub fn reclaim(&self) {
         // SAFETY: Only shared references to this are allowed
         let core = unsafe { self.inner.as_ref() };
         core.reclaim();
+    }
+
+    /// Try to reclaim memory, but don't wait for the shared lock to do so
+    pub fn try_reclaim(&self) {
+        // SAFETY: Only shared references to this are allowed
+        let core = unsafe { self.inner.as_ref() };
+        core.try_reclaim();
     }
 }
 
@@ -194,10 +196,15 @@ impl<T> HzrdCellInner<T> {
         unsafe { guard.tail_node().unwrap_unchecked() }
     }
 
-    pub fn reclaim(&self) {
-        let mut retired = self.retired.lock().unwrap();
-        let hazard_ptrs = self.hazard_ptrs.lock().unwrap();
+    fn swap(&self, value: T) -> NonNull<T> {
+        let new_ptr = Box::into_raw(Box::new(value));
 
+        // SAFETY: Ptr must at this point be non-null
+        let old_raw_ptr = self.value.swap(new_ptr, Ordering::SeqCst);
+        unsafe { NonNull::new_unchecked(old_raw_ptr) }
+    }
+    
+    fn __reclaim(retired: &mut LinkedList<RetiredPtr<T>>, hazard_ptrs: &LinkedList<HzrdPtr<T>>) {
         let mut still_active = LinkedList::new();
         'outer: while let Some(node) = retired.pop_front() {
             for hazard_ptr in hazard_ptrs.iter() {
@@ -209,6 +216,46 @@ impl<T> HzrdCellInner<T> {
         }
 
         *retired = still_active;
+    }
+
+    /// Reclaim available memory
+    pub fn reclaim(&self) {
+        // Try to aquire lock, exit if it is taken, as this
+        // means someone else is already reclaiming memory!
+        let Ok(mut retired) = self.retired.try_lock() else { 
+            return;
+        };
+
+        // Check if it's empty, no need to move forward otherwise
+        if retired.is_empty() {
+            return;
+        }
+
+        // Wait for access to the hazard pointers
+        let hazard_ptrs = self.hazard_ptrs.lock().unwrap();
+
+        HzrdCellInner::__reclaim(&mut retired, &hazard_ptrs);
+    }
+
+    /// Try to reclaim memory, but don't wait for the shared lock to do so
+    pub fn try_reclaim(&self) {
+        // Try to aquire lock, exit if it is taken, as this
+        // means someone else is already reclaiming memory!
+        let Ok(mut retired) = self.retired.try_lock() else { 
+            return;
+        };
+
+        // Check if it's empty, no need to move forward otherwise
+        if retired.is_empty() {
+            return;
+        }
+
+        // Check if the hazard pointers are available, if not exit
+        let Ok(hazard_ptrs) = self.hazard_ptrs.try_lock() else { 
+            return;
+        };
+
+        HzrdCellInner::__reclaim(&mut retired, &hazard_ptrs);
     }
 }
 
@@ -238,7 +285,7 @@ mod tests {
     #[test]
     fn single() {
         let string = String::new();
-        let cell = HzrdCell::new(string);
+        let mut cell = HzrdCell::new(string);
 
         {
             let handle: HzrdCellHandle<_> = cell.get();
@@ -261,10 +308,10 @@ mod tests {
     #[test]
     fn double() {
         let string = String::new();
-        let cell = HzrdCell::new(string);
+        let mut cell = HzrdCell::new(string);
 
         std::thread::scope(|s| {
-            let cell_1 = HzrdCell::clone(&cell);
+            let mut cell_1 = HzrdCell::clone(&cell);
             s.spawn(move || {
                 let handle = cell_1.get();
                 std::thread::sleep(Duration::from_millis(200));
@@ -273,7 +320,7 @@ mod tests {
 
             std::thread::sleep(Duration::from_millis(100));
 
-            let cell_2 = HzrdCell::clone(&cell);
+            let mut cell_2 = HzrdCell::clone(&cell);
             s.spawn(move || {
                 let handle = cell_2.get();
                 assert_eq!(*handle, "");
