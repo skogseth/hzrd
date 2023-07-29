@@ -5,6 +5,8 @@
 use std::marker::PhantomData;
 use std::ptr::{null_mut, NonNull};
 
+use crate::utils::allocate;
+
 #[derive(Debug)]
 pub struct LinkedList<T> {
     head: Option<NonNull<Node<T>>>,
@@ -24,12 +26,6 @@ impl<T> Node<T> {
     }
 }
 
-/// Does not clean up allocated memory!
-fn allocate<T>(value: T) -> *mut T {
-    let ptr = Box::new(value);
-    Box::into_raw(ptr)
-}
-
 impl<T> LinkedList<T> {
     pub fn new() -> LinkedList<T> {
         LinkedList {
@@ -44,7 +40,7 @@ impl<T> LinkedList<T> {
             next: None,
             prev: None,
         };
-        let ptr = crate::utils::allocate(node);
+        let ptr = allocate(node);
         LinkedList {
             head: Some(ptr),
             tail: Some(ptr),
@@ -62,7 +58,7 @@ impl<T> LinkedList<T> {
             next: Some(head),
             prev: None,
         };
-        let ptr = crate::utils::allocate(node);
+        let ptr = allocate(node);
         unsafe { (*head.as_ptr()).prev = Some(ptr) };
         self.head = Some(ptr);
     }
@@ -78,7 +74,7 @@ impl<T> LinkedList<T> {
             next: None,
             prev: Some(tail),
         };
-        let ptr = crate::utils::allocate(node);
+        let ptr = allocate(node);
         unsafe { (*tail.as_ptr()).next = Some(ptr) };
         self.tail = Some(ptr);
     }
