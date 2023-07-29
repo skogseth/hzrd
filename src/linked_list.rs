@@ -104,7 +104,7 @@ impl<T> LinkedList<T> {
 
     pub fn pop_back(&mut self) -> Option<T> {
         let Some(tail) = self.tail else {
-            return None;  
+            return None;
         };
 
         // Can never access self.tail after this!
@@ -275,7 +275,7 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
             unsafe {
                 self.tail = (*tail.as_ptr()).prev;
                 Some(&mut (*tail.as_ptr()).value)
-            }                
+            }
         } else {
             None
         }
@@ -329,14 +329,13 @@ mod tests {
         let _ = LinkedList::from(vec);
     }
 
-        #[test]
+    #[test]
     fn iterator() {
         let vec_1 = vec![1, 2, 3, 4, 5];
         let list = LinkedList::from(vec_1.clone());
         let vec_2 = list.collect::<Vec<_>>();
         assert_eq!(vec_1, vec_2);
     }
-
 
     #[test]
     fn iter() {
