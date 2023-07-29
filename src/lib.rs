@@ -4,21 +4,11 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
 
+mod linked_list;
 mod utils;
-use crate::utils::{LinkedList, Node};
 
-/// Place object on the heap (will leak)
-fn allocate<T>(object: T) -> NonNull<T> {
-    let raw = Box::into_raw(Box::new(object));
-    // SAFETY: The boxed ptr itself is never null
-    unsafe { NonNull::new_unchecked(raw) }
-}
-
-/// Free heap allocated memory
-/// SAFETY: Must point to valid heap-allocated memory
-unsafe fn free<T>(non_null_ptr: NonNull<T>) {
-    let _ = Box::from_raw(non_null_ptr.as_ptr());
-}
+use crate::linked_list::{LinkedList, Node};
+use crate::utils::{allocate, free};
 
 /// Holds some address that is currently used (may be null)
 type HzrdPtr<T> = AtomicPtr<T>;
