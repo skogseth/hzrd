@@ -19,8 +19,8 @@ pub struct Node<T> {
 }
 
 impl<T> Node<T> {
-    pub unsafe fn get_from_raw(ptr: *mut Self) -> *mut T {
-        &mut (*ptr).value
+    pub unsafe fn get_from_ptr(ptr: NonNull<Self>) -> *mut T {
+        &mut (*ptr.as_ptr()).value
     }
 }
 
@@ -130,9 +130,9 @@ impl<T> LinkedList<T> {
     }
 
     /// SAFETY: The node pointer must point to a node in the given `LinkedList`
-    pub unsafe fn remove_node(&mut self, ptr: *mut Node<T>) -> T {
+    pub unsafe fn remove_node(&mut self, ptr: NonNull<Node<T>>) -> T {
         // SAFETY: Cannot access ptr after this
-        let boxed = unsafe { Box::from_raw(ptr) };
+        let boxed = unsafe { Box::from_raw(ptr.as_ptr()) };
         let Node { next, prev, value } = *boxed;
 
         if let Some(prev) = prev {
@@ -387,9 +387,9 @@ mod tests {
         let last = list.tail_node().unwrap();
 
         unsafe {
-            list.remove_node(first.as_ptr());
-            list.remove_node(middle.as_ptr());
-            list.remove_node(last.as_ptr());
+            list.remove_node(first);
+            list.remove_node(middle);
+            list.remove_node(last);
         }
     }
 }

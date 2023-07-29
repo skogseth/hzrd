@@ -38,7 +38,7 @@ impl<T> HzrdCell<T> {
         let core = unsafe { self.inner.as_ref() };
 
         // SAFETY: Good?
-        let ptr_to_hazard_ptr = unsafe { Node::get_from_raw(self.node_ptr.as_ptr()) };
+        let ptr_to_hazard_ptr = unsafe { Node::get_from_ptr(self.node_ptr) };
 
         // SAFETY: Good right?
         let hazard_ptr = unsafe { &*ptr_to_hazard_ptr };
@@ -112,7 +112,7 @@ impl<T> Drop for HzrdCell<T> {
             let mut hazard_ptrs = core.hazard_ptrs.lock().unwrap();
 
             // SAFETY: The node ptr is guaranteed to be a valid pointer to an element in the list
-            let _ = unsafe { hazard_ptrs.remove_node(self.node_ptr.as_ptr()) };
+            let _ = unsafe { hazard_ptrs.remove_node(self.node_ptr) };
 
             hazard_ptrs.is_empty()
         };
@@ -174,16 +174,14 @@ impl<T> HzrdCellInner<T> {
         let ptr = Box::into_raw(Box::new(value));
 
         let list = LinkedList::single(hazard_ptr);
-        let node_ptr = list.head_node();
+        // SAFETY: There must be a head node at this point
+        let node_ptr = unsafe { list.head_node().unwrap_unchecked() };
 
         let core = Self {
             value: AtomicPtr::new(ptr),
             hazard_ptrs: Mutex::new(list),
             retired: Mutex::new(LinkedList::new()),
         };
-
-        // SAFETY: This is probably okay right?
-        let node_ptr = unsafe { node_ptr.unwrap_unchecked() };
 
         (core, node_ptr)
     }
@@ -192,10 +190,8 @@ impl<T> HzrdCellInner<T> {
         let mut guard = self.hazard_ptrs.lock().unwrap();
         let hazard_ptr = HzrdPtr::new(std::ptr::null_mut());
         guard.push_back(hazard_ptr);
-        let node_ptr = guard.tail_node();
-
-        // SAFETY: ?
-        unsafe { node_ptr.unwrap_unchecked() }
+        // SAFETY: There must be a tail node at this point
+        unsafe { guard.tail_node().unwrap_unchecked() }
     }
 
     pub fn reclaim(&self) {
