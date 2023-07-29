@@ -3,7 +3,7 @@
 //! Implementation of linked list using raw pointers
 
 use std::marker::PhantomData;
-use std::ptr::{null_mut, NonNull};
+use std::ptr::NonNull;
 
 use crate::utils::allocate;
 
@@ -160,16 +160,16 @@ impl<T> LinkedList<T> {
 
     pub fn iter(&self) -> Iter<T> {
         Iter {
-            head: self.head.map(|x| x.as_ptr()).unwrap_or(null_mut()),
-            tail: self.tail.map(|x| x.as_ptr()).unwrap_or(null_mut()),
+            head: self.head,
+            tail: self.tail,
             marker: PhantomData,
         }
     }
 
     pub fn iter_mut(&mut self) -> IterMut<T> {
         IterMut {
-            head: self.head.map(|x| x.as_ptr()).unwrap_or(null_mut()),
-            tail: self.tail.map(|x| x.as_ptr()).unwrap_or(null_mut()),
+            head: self.head,
+            tail: self.tail,
             marker: PhantomData,
         }
     }
@@ -215,8 +215,8 @@ impl<T> Iterator for LinkedList<T> {
 }
 
 pub struct Iter<'a, T> {
-    head: *mut Node<T>,
-    tail: *mut Node<T>,
+    head: Option<NonNull<Node<T>>>,
+    tail: Option<NonNull<Node<T>>>,
     marker: PhantomData<&'a T>,
 }
 
@@ -224,14 +224,10 @@ impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if !self.head.is_null() {
-            let node = self.head;
+        if let Some(head) = self.head {
             unsafe {
-                self.head = match (*node).next {
-                    Some(node) => node.as_ptr(),
-                    None => std::ptr::null_mut(),
-                };
-                Some(&(*node).value)
+                self.head = (*head.as_ptr()).next;
+                Some(&(*head.as_ptr()).value)
             }
         } else {
             None
@@ -241,14 +237,10 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
 impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if !self.tail.is_null() {
-            let node = self.tail;
+        if let Some(tail) = self.tail {
             unsafe {
-                self.tail = match (*node).prev {
-                    Some(node) => node.as_ptr(),
-                    None => std::ptr::null_mut(),
-                };
-                Some(&(*node).value)
+                self.tail = (*tail.as_ptr()).prev;
+                Some(&(*tail.as_ptr()).value)
             }
         } else {
             None
@@ -257,8 +249,8 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
 }
 
 pub struct IterMut<'a, T> {
-    head: *mut Node<T>,
-    tail: *mut Node<T>,
+    head: Option<NonNull<Node<T>>>,
+    tail: Option<NonNull<Node<T>>>,
     marker: PhantomData<&'a mut T>,
 }
 
@@ -266,14 +258,10 @@ impl<'a, T> Iterator for IterMut<'a, T> {
     type Item = &'a mut T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if !self.head.is_null() {
-            let node = self.head;
+        if let Some(head) = self.head {
             unsafe {
-                self.head = match (*node).next {
-                    Some(node) => node.as_ptr(),
-                    None => std::ptr::null_mut(),
-                };
-                Some(&mut (*node).value)
+                self.head = (*head.as_ptr()).next;
+                Some(&mut (*head.as_ptr()).value)
             }
         } else {
             None
@@ -283,14 +271,10 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 
 impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if !self.tail.is_null() {
-            let node = self.tail;
+        if let Some(tail) = self.tail {
             unsafe {
-                self.tail = match (*node).prev {
-                    Some(node) => node.as_ptr(),
-                    None => std::ptr::null_mut(),
-                };
-                Some(&mut (*node).value)
+                self.tail = (*tail.as_ptr()).prev;
+                Some(&mut (*tail.as_ptr()).value)
             }                
         } else {
             None
