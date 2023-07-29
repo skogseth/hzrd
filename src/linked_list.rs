@@ -3,206 +3,159 @@
 //! Implementation of linked list using raw pointers
 
 use std::marker::PhantomData;
-use std::ptr::null_mut;
+use std::ptr::NonNull;
+
+use crate::utils::allocate;
 
 #[derive(Debug)]
 pub struct LinkedList<T> {
-    head: *mut Node<T>,
-    tail: *mut Node<T>,
+    head: Option<NonNull<Node<T>>>,
+    tail: Option<NonNull<Node<T>>>,
 }
 
 #[derive(Debug)]
 pub struct Node<T> {
     value: T,
-    next: *mut Node<T>,
-    prev: *mut Node<T>,
+    next: Option<NonNull<Node<T>>>,
+    prev: Option<NonNull<Node<T>>>,
 }
 
 impl<T> Node<T> {
-    pub unsafe fn get_from_raw(ptr: *mut Self) -> *mut T {
-        &mut (*ptr).value
+    pub unsafe fn get_from_ptr(ptr: NonNull<Self>) -> *mut T {
+        &mut (*ptr.as_ptr()).value
     }
-}
-
-/// Does not clean up allocated memory!
-fn allocate<T>(value: T) -> *mut T {
-    let ptr = Box::new(value);
-    Box::into_raw(ptr)
 }
 
 impl<T> LinkedList<T> {
     pub fn new() -> LinkedList<T> {
         LinkedList {
-            head: null_mut(),
-            tail: null_mut(),
+            head: None,
+            tail: None,
         }
     }
 
     pub fn single(value: T) -> LinkedList<T> {
         let node = Node {
             value,
-            next: null_mut(),
-            prev: null_mut(),
+            next: None,
+            prev: None,
         };
         let ptr = allocate(node);
         LinkedList {
-            head: ptr,
-            tail: ptr,
+            head: Some(ptr),
+            tail: Some(ptr),
         }
     }
 
     pub fn push_front(&mut self, value: T) {
-        if self.head.is_null() {
+        let Some(head) = self.head else {
             *self = LinkedList::single(value);
             return;
-        }
+        };
 
         let node = Node {
             value,
-            next: self.head,
-            prev: null_mut(),
+            next: Some(head),
+            prev: None,
         };
         let ptr = allocate(node);
-        unsafe { (*self.head).prev = ptr };
-        self.head = ptr;
+        unsafe { (*head.as_ptr()).prev = Some(ptr) };
+        self.head = Some(ptr);
     }
 
     pub fn push_back(&mut self, value: T) {
-        if self.tail.is_null() {
+        let Some(tail) = self.tail else {
             *self = LinkedList::single(value);
             return;
-        }
+        };
 
         let node = Node {
             value,
-            next: null_mut(),
-            prev: self.tail,
+            next: None,
+            prev: Some(tail),
         };
         let ptr = allocate(node);
-        unsafe { (*self.tail).next = ptr };
-        self.tail = ptr;
+        unsafe { (*tail.as_ptr()).next = Some(ptr) };
+        self.tail = Some(ptr);
     }
 
     pub fn pop_front(&mut self) -> Option<T> {
-        if self.head.is_null() {
+        let Some(head) = self.head else {
             return None;
-        }
+        };
 
         // SAFETY: Can never access self.head after this!
         let Node {
             value,
             next: second,
             ..
-        } = unsafe { *Box::from_raw(self.head) };
+        } = unsafe { *Box::from_raw(head.as_ptr()) };
 
-        if second.is_null() {
-            self.head = null_mut();
-            self.tail = null_mut();
+        if let Some(second) = second {
+            unsafe { (*second.as_ptr()).prev = None };
+            self.head = Some(second);
         } else {
-            unsafe { (*second).prev = null_mut() };
-            self.head = second;
+            self.head = None;
+            self.tail = None;
         }
 
         Some(value)
     }
 
     pub fn pop_back(&mut self) -> Option<T> {
-        if self.tail.is_null() {
+        let Some(tail) = self.tail else {
             return None;
-        }
+        };
 
         // Can never access self.tail after this!
         let Node {
             value,
             prev: penultimate,
             ..
-        } = unsafe { *Box::from_raw(self.tail) };
+        } = unsafe { *Box::from_raw(tail.as_ptr()) };
 
-        if penultimate.is_null() {
-            self.head = null_mut();
-            self.tail = null_mut();
+        if let Some(penultimate) = penultimate {
+            unsafe { (*penultimate.as_ptr()).next = None };
+            self.tail = Some(penultimate);
         } else {
-            unsafe { (*penultimate).next = null_mut() };
-            self.tail = penultimate;
+            self.head = None;
+            self.tail = None;
         }
 
         Some(value)
     }
 
     /// SAFETY: The node pointer must point to a node in the given `LinkedList`
-    pub unsafe fn remove_node(&mut self, ptr: *mut Node<T>) -> T {
+    pub unsafe fn remove_node(&mut self, ptr: NonNull<Node<T>>) -> T {
         // SAFETY: Cannot access ptr after this
-        let boxed = unsafe { Box::from_raw(ptr) };
+        let boxed = unsafe { Box::from_raw(ptr.as_ptr()) };
         let Node { next, prev, value } = *boxed;
 
-        if prev.is_null() {
+        if let Some(prev) = prev {
+            (*prev.as_ptr()).next = next;
+        } else {
             self.head = next;
-        } else {
-            (*prev).next = next;
-        };
-
-        if next.is_null() {
-            self.tail = prev;
-        } else {
-            (*next).prev = prev;
         }
 
+        if let Some(next) = next {
+            (*next.as_ptr()).prev = prev;
+        } else {
+            self.tail = prev;
+        }
         value
     }
 
-    pub fn single_and_get_raw(value: T) -> (LinkedList<T>, *mut Node<T>) {
-        let node = Node {
-            value,
-            next: null_mut(),
-            prev: null_mut(),
-        };
-        let ptr = allocate(node);
-        let list = LinkedList {
-            head: ptr,
-            tail: ptr,
-        };
-        (list, ptr)
+    pub fn head_node(&self) -> Option<NonNull<Node<T>>> {
+        self.head
     }
 
-    pub fn push_front_and_get_raw(&mut self, value: T) -> *mut Node<T> {
-        if self.head.is_null() {
-            let (list, ptr) = LinkedList::single_and_get_raw(value);
-            *self = list;
-            return ptr;
-        }
-
-        let node = Node {
-            value,
-            next: self.head,
-            prev: null_mut(),
-        };
-        let ptr = allocate(node);
-        unsafe { (*self.head).prev = ptr };
-        self.head = ptr;
-        ptr
-    }
-
-    pub fn push_back_and_get_raw(&mut self, value: T) -> *mut Node<T> {
-        if self.tail.is_null() {
-            let (list, ptr) = LinkedList::single_and_get_raw(value);
-            *self = list;
-            return ptr;
-        }
-
-        let node = Node {
-            value,
-            next: null_mut(),
-            prev: self.tail,
-        };
-        let ptr = allocate(node);
-        unsafe { (*self.tail).next = ptr };
-        self.tail = ptr;
-        ptr
+    pub fn tail_node(&self) -> Option<NonNull<Node<T>>> {
+        self.tail
     }
 
     pub fn is_empty(&self) -> bool {
-        debug_assert!(self.head.is_null() == self.tail.is_null());
-        self.head.is_null()
+        debug_assert_eq!(self.head.is_none(), self.tail.is_none());
+        self.head.is_none()
     }
 
     pub fn iter(&self) -> Iter<T> {
@@ -262,8 +215,8 @@ impl<T> Iterator for LinkedList<T> {
 }
 
 pub struct Iter<'a, T> {
-    head: *mut Node<T>,
-    tail: *mut Node<T>,
+    head: Option<NonNull<Node<T>>>,
+    tail: Option<NonNull<Node<T>>>,
     marker: PhantomData<&'a T>,
 }
 
@@ -271,11 +224,10 @@ impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if !self.head.is_null() {
-            let node = self.head;
+        if let Some(head) = self.head {
             unsafe {
-                self.head = (*node).next;
-                Some(&(*node).value)
+                self.head = (*head.as_ptr()).next;
+                Some(&(*head.as_ptr()).value)
             }
         } else {
             None
@@ -285,11 +237,10 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
 impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if !self.tail.is_null() {
-            let node = self.tail;
+        if let Some(tail) = self.tail {
             unsafe {
-                self.tail = (*node).prev;
-                Some(&(*node).value)
+                self.tail = (*tail.as_ptr()).prev;
+                Some(&(*tail.as_ptr()).value)
             }
         } else {
             None
@@ -298,8 +249,8 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
 }
 
 pub struct IterMut<'a, T> {
-    head: *mut Node<T>,
-    tail: *mut Node<T>,
+    head: Option<NonNull<Node<T>>>,
+    tail: Option<NonNull<Node<T>>>,
     marker: PhantomData<&'a mut T>,
 }
 
@@ -307,11 +258,10 @@ impl<'a, T> Iterator for IterMut<'a, T> {
     type Item = &'a mut T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if !self.head.is_null() {
-            let node = self.head;
+        if let Some(head) = self.head {
             unsafe {
-                self.head = (*node).next;
-                Some(&mut (*node).value)
+                self.head = (*head.as_ptr()).next;
+                Some(&mut (*head.as_ptr()).value)
             }
         } else {
             None
@@ -321,11 +271,10 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 
 impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if !self.tail.is_null() {
-            let node = self.tail;
+        if let Some(tail) = self.tail {
             unsafe {
-                self.tail = (*node).prev;
-                Some(&mut (*node).value)
+                self.tail = (*tail.as_ptr()).prev;
+                Some(&mut (*tail.as_ptr()).value)
             }
         } else {
             None
@@ -378,5 +327,48 @@ mod tests {
     fn frees() {
         let vec = vec![1, 2, 3, 4, 5];
         let _ = LinkedList::from(vec);
+    }
+
+    #[test]
+    fn iterator() {
+        let vec_1 = vec![1, 2, 3, 4, 5];
+        let list = LinkedList::from(vec_1.clone());
+        let vec_2 = list.collect::<Vec<_>>();
+        assert_eq!(vec_1, vec_2);
+    }
+
+    #[test]
+    fn iter() {
+        struct NonCopyInt(i32);
+        let vec: Vec<NonCopyInt> = [1, 2, 3, 4, 5].into_iter().map(NonCopyInt).collect();
+        let list = LinkedList::from(vec);
+        let _: Vec<&NonCopyInt> = list.iter().collect();
+    }
+
+    #[test]
+    fn iter_mut() {
+        let vec = vec![1, 2, 3, 4, 5];
+        let mut list = LinkedList::from(vec);
+        for element in list.iter_mut() {
+            *element += 1;
+        }
+        let vec = list.collect::<Vec<_>>();
+        assert_eq!(vec, [2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn remove_node() {
+        let mut list = LinkedList::from([1, 2, 3]);
+        let first = list.head_node().unwrap();
+        let middle = list.tail_node().unwrap();
+        list.push_back(4);
+        list.push_back(5);
+        let last = list.tail_node().unwrap();
+
+        unsafe {
+            list.remove_node(first);
+            list.remove_node(middle);
+            list.remove_node(last);
+        }
     }
 }
