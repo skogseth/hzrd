@@ -7,8 +7,8 @@ use std::ptr::{null_mut, NonNull};
 
 #[derive(Debug)]
 pub struct LinkedList<T> {
-    head: *mut Node<T>,
-    tail: *mut Node<T>,
+    head: Option<NonNull<Node<T>>>,
+    tail: Option<NonNull<Node<T>>>,
 }
 
 #[derive(Debug)]
@@ -33,8 +33,8 @@ fn allocate<T>(value: T) -> *mut T {
 impl<T> LinkedList<T> {
     pub fn new() -> LinkedList<T> {
         LinkedList {
-            head: null_mut(),
-            tail: null_mut(),
+            head: None,
+            tail: None,
         }
     }
 
@@ -44,86 +44,86 @@ impl<T> LinkedList<T> {
             next: None,
             prev: None,
         };
-        let ptr = allocate(node);
+        let ptr = crate::utils::allocate(node);
         LinkedList {
-            head: ptr,
-            tail: ptr,
+            head: Some(ptr),
+            tail: Some(ptr),
         }
     }
 
     pub fn push_front(&mut self, value: T) {
-        if self.head.is_null() {
+        let Some(head) = self.head else {
             *self = LinkedList::single(value);
             return;
-        }
+        };
 
         let node = Node {
             value,
-            next: Some(NonNull::new(self.head).unwrap()),
+            next: Some(head),
             prev: None,
         };
         let ptr = crate::utils::allocate(node);
-        unsafe { (*self.head).prev = Some(ptr) };
-        self.head = ptr.as_ptr();
+        unsafe { (*head.as_ptr()).prev = Some(ptr) };
+        self.head = Some(ptr);
     }
 
     pub fn push_back(&mut self, value: T) {
-        if self.tail.is_null() {
+        let Some(tail) = self.tail else {
             *self = LinkedList::single(value);
             return;
-        }
+        };
 
         let node = Node {
             value,
             next: None,
-            prev: Some(NonNull::new(self.tail).unwrap()),
+            prev: Some(tail),
         };
         let ptr = crate::utils::allocate(node);
-        unsafe { (*self.tail).next = Some(ptr) };
-        self.tail = ptr.as_ptr();
+        unsafe { (*tail.as_ptr()).next = Some(ptr) };
+        self.tail = Some(ptr);
     }
 
     pub fn pop_front(&mut self) -> Option<T> {
-        if self.head.is_null() {
+        let Some(head) = self.head else {
             return None;
-        }
+        };
 
         // SAFETY: Can never access self.head after this!
         let Node {
             value,
             next: second,
             ..
-        } = unsafe { *Box::from_raw(self.head) };
+        } = unsafe { *Box::from_raw(head.as_ptr()) };
 
         if let Some(second) = second {
             unsafe { (*second.as_ptr()).prev = None };
-            self.head = second.as_ptr();
+            self.head = Some(second);
         } else {
-            self.head = null_mut();
-            self.tail = null_mut();
+            self.head = None;
+            self.tail = None;
         }
 
         Some(value)
     }
 
     pub fn pop_back(&mut self) -> Option<T> {
-        if self.tail.is_null() {
-            return None;
-        }
+        let Some(tail) = self.tail else {
+            return None;  
+        };
 
         // Can never access self.tail after this!
         let Node {
             value,
             prev: penultimate,
             ..
-        } = unsafe { *Box::from_raw(self.tail) };
+        } = unsafe { *Box::from_raw(tail.as_ptr()) };
 
         if let Some(penultimate) = penultimate {
             unsafe { (*penultimate.as_ptr()).next = None };
-            self.tail = penultimate.as_ptr();
+            self.tail = Some(penultimate);
         } else {
-            self.head = null_mut();
-            self.tail = null_mut();
+            self.head = None;
+            self.tail = None;
         }
 
         Some(value)
@@ -138,48 +138,42 @@ impl<T> LinkedList<T> {
         if let Some(prev) = prev {
             (*prev.as_ptr()).next = next;
         } else {
-            self.head = match next {
-                Some(node) => node.as_ptr(),
-                None => std::ptr::null_mut(),
-            }
+            self.head = next;
         }
 
         if let Some(next) = next {
             (*next.as_ptr()).prev = prev;
         } else {
-            self.tail = match prev {
-                Some(node) => node.as_ptr(),
-                None => std::ptr::null_mut(),
-            };
+            self.tail = prev;
         }
         value
     }
 
-    pub fn head_node(&self) -> *mut Node<T> {
+    pub fn head_node(&self) -> Option<NonNull<Node<T>>> {
         self.head
     }
 
-    pub fn tail_node(&self) -> *mut Node<T> {
+    pub fn tail_node(&self) -> Option<NonNull<Node<T>>> {
         self.tail
     }
 
     pub fn is_empty(&self) -> bool {
-        debug_assert!(self.head.is_null() == self.tail.is_null());
-        self.head.is_null()
+        debug_assert_eq!(self.head.is_none(), self.tail.is_none());
+        self.head.is_none()
     }
 
     pub fn iter(&self) -> Iter<T> {
         Iter {
-            head: self.head,
-            tail: self.tail,
+            head: self.head.map(|x| x.as_ptr()).unwrap_or(null_mut()),
+            tail: self.tail.map(|x| x.as_ptr()).unwrap_or(null_mut()),
             marker: PhantomData,
         }
     }
 
     pub fn iter_mut(&mut self) -> IterMut<T> {
         IterMut {
-            head: self.head,
-            tail: self.tail,
+            head: self.head.map(|x| x.as_ptr()).unwrap_or(null_mut()),
+            tail: self.tail.map(|x| x.as_ptr()).unwrap_or(null_mut()),
             marker: PhantomData,
         }
     }
@@ -386,16 +380,16 @@ mod tests {
     #[test]
     fn remove_node() {
         let mut list = LinkedList::from([1, 2, 3]);
-        let first = list.head_node();
-        let middle = list.tail_node();
+        let first = list.head_node().unwrap();
+        let middle = list.tail_node().unwrap();
         list.push_back(4);
         list.push_back(5);
-        let last = list.tail_node();
+        let last = list.tail_node().unwrap();
 
         unsafe {
-            list.remove_node(first);
-            list.remove_node(middle);
-            list.remove_node(last);
+            list.remove_node(first.as_ptr());
+            list.remove_node(middle.as_ptr());
+            list.remove_node(last.as_ptr());
         }
     }
 }

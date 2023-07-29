@@ -174,7 +174,7 @@ impl<T> HzrdCellInner<T> {
         let ptr = Box::into_raw(Box::new(value));
 
         let list = LinkedList::single(hazard_ptr);
-        let raw_node_ptr = list.head_node();
+        let node_ptr = list.head_node();
 
         let core = Self {
             value: AtomicPtr::new(ptr),
@@ -183,7 +183,7 @@ impl<T> HzrdCellInner<T> {
         };
 
         // SAFETY: This is probably okay right?
-        let node_ptr = unsafe { NonNull::new_unchecked(raw_node_ptr) };
+        let node_ptr = unsafe { node_ptr.unwrap_unchecked() };
 
         (core, node_ptr)
     }
@@ -192,10 +192,10 @@ impl<T> HzrdCellInner<T> {
         let mut guard = self.hazard_ptrs.lock().unwrap();
         let hazard_ptr = HzrdPtr::new(std::ptr::null_mut());
         guard.push_back(hazard_ptr);
-        let raw_node_ptr = guard.tail_node();
+        let node_ptr = guard.tail_node();
 
         // SAFETY: ?
-        unsafe { NonNull::new_unchecked(raw_node_ptr) }
+        unsafe { node_ptr.unwrap_unchecked() }
     }
 
     pub fn reclaim(&self) {
