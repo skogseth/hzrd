@@ -337,4 +337,48 @@ mod tests {
         let vec = vec![1, 2, 3, 4, 5];
         let _ = LinkedList::from(vec);
     }
+
+        #[test]
+    fn iterator() {
+        let vec_1 = vec![1, 2, 3, 4, 5];
+        let list = LinkedList::from(vec_1.clone());
+        let vec_2 = list.collect::<Vec<_>>();
+        assert_eq!(vec_1, vec_2);
+    }
+
+
+    #[test]
+    fn iter() {
+        struct NonCopyInt(i32);
+        let vec: Vec<NonCopyInt> = [1, 2, 3, 4, 5].into_iter().map(NonCopyInt).collect();
+        let list = LinkedList::from(vec);
+        let _: Vec<&NonCopyInt> = list.iter().collect();
+    }
+
+    #[test]
+    fn iter_mut() {
+        let vec = vec![1, 2, 3, 4, 5];
+        let mut list = LinkedList::from(vec);
+        for element in list.iter_mut() {
+            *element += 1;
+        }
+        let vec = list.collect::<Vec<_>>();
+        assert_eq!(vec, [2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn remove_node() {
+        let mut list = LinkedList::from([1, 2, 3]);
+        let first = list.head_node();
+        let middle = list.tail_node();
+        list.push_back(4);
+        list.push_back(5);
+        let last = list.tail_node();
+
+        unsafe {
+            list.remove_node(first);
+            list.remove_node(middle);
+            list.remove_node(last);
+        }
+    }
 }
