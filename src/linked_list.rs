@@ -150,54 +150,12 @@ impl<T> LinkedList<T> {
         value
     }
 
-    pub fn single_and_get_raw(value: T) -> (LinkedList<T>, *mut Node<T>) {
-        let node = Node {
-            value,
-            next: null_mut(),
-            prev: null_mut(),
-        };
-        let ptr = allocate(node);
-        let list = LinkedList {
-            head: ptr,
-            tail: ptr,
-        };
-        (list, ptr)
+    pub fn head_node(&self) -> *mut Node<T> {
+        self.head
     }
 
-    pub fn push_front_and_get_raw(&mut self, value: T) -> *mut Node<T> {
-        if self.head.is_null() {
-            let (list, ptr) = LinkedList::single_and_get_raw(value);
-            *self = list;
-            return ptr;
-        }
-
-        let node = Node {
-            value,
-            next: self.head,
-            prev: null_mut(),
-        };
-        let ptr = allocate(node);
-        unsafe { (*self.head).prev = ptr };
-        self.head = ptr;
-        ptr
-    }
-
-    pub fn push_back_and_get_raw(&mut self, value: T) -> *mut Node<T> {
-        if self.tail.is_null() {
-            let (list, ptr) = LinkedList::single_and_get_raw(value);
-            *self = list;
-            return ptr;
-        }
-
-        let node = Node {
-            value,
-            next: null_mut(),
-            prev: self.tail,
-        };
-        let ptr = allocate(node);
-        unsafe { (*self.tail).next = ptr };
-        self.tail = ptr;
-        ptr
+    pub fn tail_node(&self) -> *mut Node<T> {
+        self.tail
     }
 
     pub fn is_empty(&self) -> bool {

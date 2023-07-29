@@ -173,7 +173,8 @@ impl<T> HzrdCellInner<T> {
         let hazard_ptr = HzrdPtr::new(std::ptr::null_mut());
         let ptr = Box::into_raw(Box::new(value));
 
-        let (list, raw_node_ptr) = LinkedList::single_and_get_raw(hazard_ptr);
+        let list = LinkedList::single(hazard_ptr);
+        let raw_node_ptr = list.head_node();
 
         let core = Self {
             value: AtomicPtr::new(ptr),
@@ -190,7 +191,8 @@ impl<T> HzrdCellInner<T> {
     pub fn add(&self) -> NonNull<Node<HzrdPtr<T>>> {
         let mut guard = self.hazard_ptrs.lock().unwrap();
         let hazard_ptr = HzrdPtr::new(std::ptr::null_mut());
-        let raw_node_ptr = guard.push_back_and_get_raw(hazard_ptr);
+        guard.push_back(hazard_ptr);
+        let raw_node_ptr = guard.tail_node();
 
         // SAFETY: ?
         unsafe { NonNull::new_unchecked(raw_node_ptr) }
