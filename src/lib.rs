@@ -21,29 +21,29 @@ unsafe fn free<T>(non_null_ptr: NonNull<T>) {
 }
 
 /// Holds some address that is currently used (may be null)
-type HazardPtr<T> = AtomicPtr<T>;
+type HzrdPtr<T> = AtomicPtr<T>;
 
-/// `HazardCell` holds a value that can be shared, and mutated, by multiple threads
+/// `HzrdCell` holds a value that can be shared, and mutated, by multiple threads
 ///
-/// The `HazardCell` gives wait-free get and set methods to the underlying value.
+/// The `HzrdCell` gives wait-free get and set methods to the underlying value.
 /// The downside is more excessive memory use, and locking is required on `clone` & `drop`.
-pub struct HazardCell<T> {
-    inner: NonNull<HazardCellInner<T>>,
-    node_ptr: NonNull<Node<HazardPtr<T>>>,
+pub struct HzrdCell<T> {
+    inner: NonNull<HzrdCellInner<T>>,
+    node_ptr: NonNull<Node<HzrdPtr<T>>>,
     marker: PhantomData<T>,
 }
 
-impl<T> HazardCell<T> {
+impl<T> HzrdCell<T> {
     pub fn new(value: T) -> Self {
-        let (core, node_ptr) = HazardCellInner::new(value);
-        HazardCell {
+        let (core, node_ptr) = HzrdCellInner::new(value);
+        HzrdCell {
             inner: allocate(core),
             node_ptr,
             marker: PhantomData,
         }
     }
 
-    pub fn get(&self) -> HazardCellHandle<'_, T> {
+    pub fn get(&self) -> HzrdCellHandle<'_, T> {
         // SAFETY: These are only ever grabbed as shared
         let core = unsafe { self.inner.as_ref() };
 
@@ -66,7 +66,7 @@ impl<T> HazardCell<T> {
             }
         }
 
-        HazardCellHandle {
+        HzrdCellHandle {
             // SAFETY: Pointer is now held valid by the hazard ptr
             reference: unsafe { &*ptr },
 
@@ -95,15 +95,15 @@ impl<T> HazardCell<T> {
     }
 }
 
-unsafe impl<T: Send> Send for HazardCell<T> {}
+unsafe impl<T: Send> Send for HzrdCell<T> {}
 
-impl<T> Clone for HazardCell<T> {
+impl<T> Clone for HzrdCell<T> {
     fn clone(&self) -> Self {
         // SAFETY: We can always get a shared reference to this
         let core = unsafe { self.inner.as_ref() };
         let node_ptr = core.add();
 
-        HazardCell {
+        HzrdCell {
             inner: self.inner,
             node_ptr,
             marker: PhantomData,
@@ -111,7 +111,7 @@ impl<T> Clone for HazardCell<T> {
     }
 }
 
-impl<T> Drop for HazardCell<T> {
+impl<T> Drop for HzrdCell<T> {
     fn drop(&mut self) {
         // SAFETY: We scope this so that all references/pointers are dropped before inner is dropped
         let should_drop_inner = {
@@ -136,19 +136,19 @@ impl<T> Drop for HazardCell<T> {
     }
 }
 
-pub struct HazardCellHandle<'cell, T> {
+pub struct HzrdCellHandle<'cell, T> {
     reference: &'cell T,
-    hazard_ptr: NonNull<HazardPtr<T>>,
+    hazard_ptr: NonNull<HzrdPtr<T>>,
 }
 
-impl<T> Deref for HazardCellHandle<'_, T> {
+impl<T> Deref for HzrdCellHandle<'_, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         self.reference
     }
 }
 
-impl<T> Drop for HazardCellHandle<'_, T> {
+impl<T> Drop for HzrdCellHandle<'_, T> {
     fn drop(&mut self) {
         // SAFETY:
         // - Only shared references are valid
@@ -167,20 +167,20 @@ impl<T> Drop for RetiredPtr<T> {
     }
 }
 
-/// Shared heap allocated object for `HazardCell`
+/// Shared heap allocated object for `HzrdCell`
 ///
 /// The `hazard_ptrs` keep track of pointers that are in use, and cannot be freed
-/// There is one node per `HazardCell`, which means the list also keeps track
-/// of the number of active `HazardCell`s (akin to a very inefficent atomic counter).
-struct HazardCellInner<T> {
+/// There is one node per `HzrdCell`, which means the list also keeps track
+/// of the number of active `HzrdCell`s (akin to a very inefficent atomic counter).
+struct HzrdCellInner<T> {
     value: AtomicPtr<T>,
-    hazard_ptrs: Mutex<LinkedList<HazardPtr<T>>>,
+    hazard_ptrs: Mutex<LinkedList<HzrdPtr<T>>>,
     retired: Mutex<LinkedList<RetiredPtr<T>>>,
 }
 
-impl<T> HazardCellInner<T> {
-    pub fn new(value: T) -> (Self, NonNull<Node<HazardPtr<T>>>) {
-        let hazard_ptr = HazardPtr::new(std::ptr::null_mut());
+impl<T> HzrdCellInner<T> {
+    pub fn new(value: T) -> (Self, NonNull<Node<HzrdPtr<T>>>) {
+        let hazard_ptr = HzrdPtr::new(std::ptr::null_mut());
         let ptr = Box::into_raw(Box::new(value));
 
         let (list, raw_node_ptr) = LinkedList::single_and_get_raw(hazard_ptr);
@@ -197,9 +197,9 @@ impl<T> HazardCellInner<T> {
         (core, node_ptr)
     }
 
-    pub fn add(&self) -> NonNull<Node<HazardPtr<T>>> {
+    pub fn add(&self) -> NonNull<Node<HzrdPtr<T>>> {
         let mut guard = self.hazard_ptrs.lock().unwrap();
-        let hazard_ptr = HazardPtr::new(std::ptr::null_mut());
+        let hazard_ptr = HzrdPtr::new(std::ptr::null_mut());
         let raw_node_ptr = guard.push_back_and_get_raw(hazard_ptr);
 
         // SAFETY: ?
@@ -224,7 +224,7 @@ impl<T> HazardCellInner<T> {
     }
 }
 
-impl<T> Drop for HazardCellInner<T> {
+impl<T> Drop for HzrdCellInner<T> {
     fn drop(&mut self) {
         // SAFETY: No more references can be held if this is being dropped
         let _ = unsafe { Box::from_raw(self.value.load(Ordering::SeqCst)) };
@@ -239,21 +239,21 @@ mod tests {
 
     #[test]
     fn shallow_drop_test() {
-        let _ = HazardCell::new(0);
+        let _ = HzrdCell::new(0);
     }
 
     #[test]
     fn deep_drop_test() {
-        let _ = HazardCell::new(vec![1, 2, 3]);
+        let _ = HzrdCell::new(vec![1, 2, 3]);
     }
 
     #[test]
     fn single() {
         let string = String::new();
-        let cell = HazardCell::new(string);
+        let cell = HzrdCell::new(string);
 
         {
-            let handle: HazardCellHandle<_> = cell.get();
+            let handle: HzrdCellHandle<_> = cell.get();
             assert_eq!(handle.len(), 0);
             assert_eq!(*handle, "");
         }
@@ -262,7 +262,7 @@ mod tests {
         cell.set(new_string);
 
         {
-            let handle: HazardCellHandle<_> = cell.get();
+            let handle: HzrdCellHandle<_> = cell.get();
             assert_eq!(handle.len(), 12);
             assert_eq!(*handle, "Hello world!");
         }
@@ -273,19 +273,19 @@ mod tests {
     #[test]
     fn double() {
         let string = String::new();
-        let cell = HazardCell::new(string);
+        let cell = HzrdCell::new(string);
 
         std::thread::scope(|s| {
-            let cell_1 = HazardCell::clone(&cell);
+            let cell_1 = HzrdCell::clone(&cell);
             s.spawn(move || {
                 let handle = cell_1.get();
-                std::thread::sleep(Duration::from_secs(2));
+                std::thread::sleep(Duration::from_millis(200));
                 assert_eq!(*handle, "");
             });
 
-            std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(Duration::from_millis(100));
 
-            let cell_2 = HazardCell::clone(&cell);
+            let cell_2 = HzrdCell::clone(&cell);
             s.spawn(move || {
                 let handle = cell_2.get();
                 assert_eq!(*handle, "");
