@@ -153,7 +153,7 @@ impl<T> LinkedList<T> {
         }
 
         self.len -= 1;
-        
+
         value
     }
 
@@ -423,7 +423,7 @@ mod tests {
         list.pop_front().unwrap();
         assert_eq!(list.len, 4);
         assert!(!list.is_empty());
-        
+
         list.pop_front().unwrap();
         list.pop_back().unwrap();
         assert_eq!(list.len, 2);

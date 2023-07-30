@@ -13,10 +13,55 @@ use crate::utils::{allocate, free};
 /// Holds some address that is currently used (may be null)
 type HzrdPtr<T> = AtomicPtr<T>;
 
-/// `HzrdCell` holds a value that can be shared, and mutated, by multiple threads
-///
-/// The `HzrdCell` gives wait-free get and set methods to the underlying value.
-/// The downside is more excessive memory use, and locking is required on `clone` & `drop`.
+/** 
+Holds a value that can be shared, and mutated, by multiple threads
+
+Provides lock-free get and set methods to the underlying value.
+The downside is more excessive memory use, and locking is required for
+memory reclamation as well as clone and drop.
+
+One "funky" thing about [`HzrdCell`] is that exclusivity swaps from write to read.
+This means that reading the value of the [`HzrdCell`] requires an exclusive borrow `&mut cell`, 
+which means the variable must be marked as mutable.
+Writing, on the other hand, only takes a shared borrow `&cell`, and so does not
+require the variable to be marked as mutable. This inversion is a manifestation of the deeper
+trickery that [`HzrdCell`] uses to grant lock-free, shared mutation.
+
+# Examples
+```
+# fn main() -> Result<(), &'static str> {
+use hzrd::HzrdCell;
+
+let ch = 'a';
+let mut cell = HzrdCell::new(ch);
+
+// Notice the strangeness that `get` requires mut
+let mut cell_1 = HzrdCell::clone(&cell);
+let handle_1 = std::thread::spawn(move || {
+    let read_handle = cell_1.get();
+    if *read_handle == 'a' {
+        println!("I was first");
+    } else {
+        println!("The other thread was first");
+    }
+});
+
+// ...whilst `set` does not
+let cell_2 = HzrdCell::clone(&cell);
+let handle_2 = std::thread::spawn(move || {
+    cell_2.set('!');
+});
+
+handle_1.join().map_err(|_| "Thread 1 failed")?;
+handle_2.join().map_err(|_| "Thread 2 failed")?;
+
+// If both threads have finished then the value must be '!'
+assert_eq!(*cell.get(), '!');
+#
+#     Ok(())
+# }
+```
+*/
 pub struct HzrdCell<T> {
     inner: NonNull<HzrdCellInner<T>>,
     node_ptr: NonNull<Node<HzrdPtr<T>>>,
@@ -24,15 +69,20 @@ pub struct HzrdCell<T> {
 }
 
 impl<T> HzrdCell<T> {
+    /// Construct a new [`HzrdCell`] with the given value
+    ///
+    /// The value will be allocated on the heap seperate of the metadata associated with the [`HzrdCell`].
+    /// It is therefore recommended to use [`HzrdCell::from`] if you already have a [`Box<T>`].
     pub fn new(value: T) -> Self {
-        let (core, node_ptr) = HzrdCellInner::new(value);
-        HzrdCell {
-            inner: allocate(core),
-            node_ptr,
-            marker: PhantomData,
-        }
+        HzrdCell::from(Box::new(value))
     }
 
+    /// Get a handle to read the value held by the `HzrdCell`
+    ///
+    /// The functionality of this is somewhat similar to [`std::sync::MutexGuard`],
+    /// except the [`HzrdCellHandle`] only accepts reading the value.
+    /// There is no locking mechanism needed to grab this handle, although there
+    /// might be a short wait if the read overlaps with a write.
     pub fn get(&mut self) -> HzrdCellHandle<'_, T> {
         // SAFETY: These are only ever grabbed as shared
         let core = unsafe { self.inner.as_ref() };
@@ -67,7 +117,7 @@ impl<T> HzrdCell<T> {
 
     /// Set the value of the cell
     ///
-    /// This method may block
+    /// This method may block after the value has been set.
     pub fn set(&self, value: T) {
         // SAFETY: Only shared references to this are allowed
         let core = unsafe { self.inner.as_ref() };
@@ -76,7 +126,7 @@ impl<T> HzrdCell<T> {
         let mut retired = core.retired.lock().unwrap();
         retired.push_back(RetiredPtr(old_ptr));
 
-        let Ok(hazard_ptrs) = core.hazard_ptrs.try_lock() else { 
+        let Ok(hazard_ptrs) = core.hazard_ptrs.try_lock() else {
             return;
         };
 
@@ -85,7 +135,7 @@ impl<T> HzrdCell<T> {
 
     /// Set the value of the cell, without reclaiming memory
     ///
-    /// This method may block
+    /// This method may block after the value has been set.
     pub fn just_set(&self, value: T) {
         // SAFETY: Only shared references to this are allowed
         let core = unsafe { self.inner.as_ref() };
@@ -130,6 +180,17 @@ impl<T> Clone for HzrdCell<T> {
 
         HzrdCell {
             inner: self.inner,
+            node_ptr,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<T> From<Box<T>> for HzrdCell<T> {
+    fn from(boxed: Box<T>) -> Self {
+        let (core, node_ptr) = HzrdCellInner::new(boxed);
+        HzrdCell {
+            inner: allocate(core),
             node_ptr,
             marker: PhantomData,
         }
@@ -204,9 +265,9 @@ struct HzrdCellInner<T> {
 }
 
 impl<T> HzrdCellInner<T> {
-    pub fn new(value: T) -> (Self, NonNull<Node<HzrdPtr<T>>>) {
+    pub fn new(boxed: Box<T>) -> (Self, NonNull<Node<HzrdPtr<T>>>) {
         let hazard_ptr = HzrdPtr::new(std::ptr::null_mut());
-        let ptr = Box::into_raw(Box::new(value));
+        let ptr = Box::into_raw(boxed);
 
         let list = LinkedList::single(hazard_ptr);
         // SAFETY: There must be a head node at this point
@@ -236,7 +297,7 @@ impl<T> HzrdCellInner<T> {
         let old_raw_ptr = self.value.swap(new_ptr, Ordering::SeqCst);
         unsafe { NonNull::new_unchecked(old_raw_ptr) }
     }
-    
+
     fn __reclaim(retired: &mut LinkedList<RetiredPtr<T>>, hazard_ptrs: &LinkedList<HzrdPtr<T>>) {
         let mut still_active = LinkedList::new();
         'outer: while let Some(node) = retired.pop_front() {
@@ -255,7 +316,7 @@ impl<T> HzrdCellInner<T> {
     pub fn reclaim(&self) {
         // Try to aquire lock, exit if it is taken, as this
         // means someone else is already reclaiming memory!
-        let Ok(mut retired) = self.retired.try_lock() else { 
+        let Ok(mut retired) = self.retired.try_lock() else {
             return;
         };
 
@@ -274,7 +335,7 @@ impl<T> HzrdCellInner<T> {
     pub fn try_reclaim(&self) {
         // Try to aquire lock, exit if it is taken, as this
         // means someone else is already reclaiming memory!
-        let Ok(mut retired) = self.retired.try_lock() else { 
+        let Ok(mut retired) = self.retired.try_lock() else {
             return;
         };
 
@@ -284,7 +345,7 @@ impl<T> HzrdCellInner<T> {
         }
 
         // Check if the hazard pointers are available, if not exit
-        let Ok(hazard_ptrs) = self.hazard_ptrs.try_lock() else { 
+        let Ok(hazard_ptrs) = self.hazard_ptrs.try_lock() else {
             return;
         };
 
@@ -380,5 +441,15 @@ mod tests {
 
         cell.reclaim();
         assert_eq!(cell.num_retired(), 0);
+    }
+
+    #[test]
+    fn from_boxed() {
+        let boxed = Box::new([1, 2, 3]);
+        let mut cell = HzrdCell::from(boxed);
+        let arr = *cell.get();
+        assert_eq!(arr, [1, 2, 3]);
+        cell.set(arr.map(|x| x + 1));
+        assert_eq!(*cell.get(), [2, 3, 4]);
     }
 }
