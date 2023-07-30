@@ -16,47 +16,92 @@ type HzrdPtr<T> = AtomicPtr<T>;
 /** 
 Holds a value that can be shared, and mutated, by multiple threads
 
-Provides lock-free get and set methods to the underlying value.
-The downside is more excessive memory use, and locking is required for
-memory reclamation as well as clone and drop.
+The main advantage of [`HzrdCell`] is that reading and writing to the value is lock-free.
+This is offset by increased memory use, a significant overhead for creating/destroying cells, 
+as well as some... funkiness.
 
-One "funky" thing about [`HzrdCell`] is that exclusivity swaps from write to read.
-This means that reading the value of the [`HzrdCell`] requires an exclusive borrow `&mut cell`, 
-which means the variable must be marked as mutable.
-Writing, on the other hand, only takes a shared borrow `&cell`, and so does not
-require the variable to be marked as mutable. This inversion is a manifestation of the deeper
-trickery that [`HzrdCell`] uses to grant lock-free, shared mutation.
+[`HzrdCell`] is particularly nice to work with if the underlying type implements copy.
+The [`get`](HzrdCell::set) method is lock-free, and requires minimal overhead. 
+The [`set`](HzrdCell::set) method is mostly lock-free, meaning that the value is instantly updated,
+but there is some overhead following the swapping of the value which requires a lock to be held. 
+However, this lock holds no contention with the reading methods of the cell, 
+only the writing/reclamation methods.
 
-# Examples
+```
+# fn main() -> Result<(), &'static str> {
+use std::time::Duration;
+use std::thread;
+
+use hzrd::HzrdCell;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    Idle,
+    Running,
+    Finished,
+}
+
+let state = HzrdCell::new(State::Idle);
+
+let state_1 = HzrdCell::clone(&state);
+let handle_1 = thread::spawn(move || {
+    thread::sleep(Duration::from_millis(1));
+    match state_1.get() {
+        State::Idle => println!("Waiting is boring, ugh"),
+        State::Running => println!("Let's go!"),
+        State::Finished => println!("We got here too late :/"),
+    }
+});
+
+let state_2 = HzrdCell::clone(&state);
+let handle_2 = thread::spawn(move || {
+    state_2.set(State::Running);
+    thread::sleep(Duration::from_millis(1));
+    state_2.set(State::Finished);
+});
+
+handle_1.join().map_err(|_| "Thread 1 failed")?;
+handle_2.join().map_err(|_| "Thread 2 failed")?;
+
+assert_eq!(state.get(), State::Finished);
+#
+#     Ok(())
+# }
+```
+
+One "funky" thing about [`HzrdCell`] is that grabbing a shared borrow 
+to the underlying value is done via the [`ReadHandle`], and aquiring this 
+requires an exlusive (aka mutable) borrow to the cell. This means the cell must be mutable.
+Here is an example for a non-copy type, which in turn means the [`ReadHandle`] is used read the value.
+
 ```
 # fn main() -> Result<(), &'static str> {
 use hzrd::HzrdCell;
 
-let ch = 'a';
-let mut cell = HzrdCell::new(ch);
+let string = String::from("Hello, world!");
+let mut cell = HzrdCell::new(string);
 
-// Notice the strangeness that `get` requires mut
+// Notice the strangeness that aquiring the `ReadHandle` requires mut
 let mut cell_1 = HzrdCell::clone(&cell);
 let handle_1 = std::thread::spawn(move || {
-    let read_handle = cell_1.get();
-    if *read_handle == 'a' {
+    let string = cell_1.read_handle();
+    if *string == "Hello, world!" {
         println!("I was first");
     } else {
         println!("The other thread was first");
     }
 });
 
-// ...whilst `set` does not
+// ...whilst changing the value does not
 let cell_2 = HzrdCell::clone(&cell);
 let handle_2 = std::thread::spawn(move || {
-    cell_2.set('!');
+    cell_2.set(String::new());
 });
 
 handle_1.join().map_err(|_| "Thread 1 failed")?;
 handle_2.join().map_err(|_| "Thread 2 failed")?;
 
-// If both threads have finished then the value must be '!'
-assert_eq!(*cell.get(), '!');
+assert!(cell.read_handle().is_empty());
 #
 #     Ok(())
 # }
@@ -77,17 +122,38 @@ impl<T> HzrdCell<T> {
         HzrdCell::from(Box::new(value))
     }
 
-    /// Get a handle to read the value held by the `HzrdCell`
+    /// Set the value of the cell
     ///
-    /// The functionality of this is somewhat similar to [`std::sync::MutexGuard`],
-    /// except the [`HzrdCellHandle`] only accepts reading the value.
-    /// There is no locking mechanism needed to grab this handle, although there
-    /// might be a short wait if the read overlaps with a write.
-    pub fn get(&mut self) -> HzrdCellHandle<'_, T> {
+    /// This method may block after the value has been set.
+    pub fn set(&self, value: T) {
+        // SAFETY: Only shared references to this are allowed
+        let core = unsafe { self.inner.as_ref() };
+        let old_ptr = core.swap(value);
+
+        let mut retired = core.retired.lock().unwrap();
+        retired.push_back(RetiredPtr(old_ptr));
+
+        let Ok(hazard_ptrs) = core.hazard_ptrs.try_lock() else {
+            return;
+        };
+
+        HzrdCellInner::__reclaim(&mut retired, &hazard_ptrs);
+    }
+
+    /// Replace the contained value with a new value, returning the old
+    ///
+    /// This will block until all [`ReadHandle`]s have been dropped
+    pub fn replace(&self, value: T) -> T {
+        let _ = value;
+        todo!()
+    }
+
+    /// Reads the contained value and updates the associated [`HzrdPtr`] returning a pointer to both
+    fn __read(&self) -> (*mut T, *mut HzrdPtr<T>) {
         // SAFETY: These are only ever grabbed as shared
         let core = unsafe { self.inner.as_ref() };
 
-        // SAFETY: We have exclusive access to this hazard ptr
+        // SAFETY: This thread has exclusive access to this hazard ptr
         let ptr_to_hazard_ptr = unsafe { Node::get_from_ptr(self.node_ptr) };
 
         // SAFETY: Same as above
@@ -106,31 +172,40 @@ impl<T> HzrdCell<T> {
             }
         }
 
-        HzrdCellHandle {
+        (ptr, ptr_to_hazard_ptr)
+    }
+
+    /// Get the value of the cell (requires the type to be [`Copy`])
+    pub fn get(&self) -> T where T: Copy {
+        let (ptr, ptr_to_hazard_ptr) = self.__read();
+
+        // SAFETY: This pointer is held valid by the hazard pointer
+        let value = unsafe { *ptr };
+
+        // We have now copied the value, so we can clear the hazard pointer 
+        // SAFETY: Trust me
+        let hazard_ptr: &HzrdPtr<T> = unsafe { &*ptr_to_hazard_ptr };
+        hazard_ptr.store(std::ptr::null_mut(), Ordering::SeqCst);
+
+        value
+    }
+
+    /// Get a handle to read the value held by the `HzrdCell`
+    ///
+    /// The functionality of this is somewhat similar to [`std::sync::MutexGuard`],
+    /// except the [`ReadHandle`] only accepts reading the value.
+    /// There is no locking mechanism needed to grab this handle, although there
+    /// might be a short wait if the read overlaps with a write.
+    pub fn read_handle(&mut self) -> ReadHandle<'_, T> {
+        let (ptr, ptr_to_hazard_ptr) = self.__read();
+
+        ReadHandle {
             // SAFETY: Pointer is now held valid by the hazard ptr
             reference: unsafe { &*ptr },
 
             // SAFETY: Always non-null
             hazard_ptr: unsafe { NonNull::new_unchecked(ptr_to_hazard_ptr) },
         }
-    }
-
-    /// Set the value of the cell
-    ///
-    /// This method may block after the value has been set.
-    pub fn set(&self, value: T) {
-        // SAFETY: Only shared references to this are allowed
-        let core = unsafe { self.inner.as_ref() };
-        let old_ptr = core.swap(value);
-
-        let mut retired = core.retired.lock().unwrap();
-        retired.push_back(RetiredPtr(old_ptr));
-
-        let Ok(hazard_ptrs) = core.hazard_ptrs.try_lock() else {
-            return;
-        };
-
-        HzrdCellInner::__reclaim(&mut retired, &hazard_ptrs);
     }
 
     /// Set the value of the cell, without reclaiming memory
@@ -163,7 +238,7 @@ impl<T> HzrdCell<T> {
     /// Get the number of retired values (aka unfreed memory)
     ///
     /// This method may block
-    pub fn num_retired(&self) -> usize {
+    pub fn retired(&self) -> usize {
         // SAFETY: Only shared references to this are allowed
         let core = unsafe { self.inner.as_ref() };
         core.retired.lock().unwrap().len()
@@ -222,19 +297,19 @@ impl<T> Drop for HzrdCell<T> {
     }
 }
 
-pub struct HzrdCellHandle<'cell, T> {
+pub struct ReadHandle<'cell, T> {
     reference: &'cell T,
     hazard_ptr: NonNull<HzrdPtr<T>>,
 }
 
-impl<T> Deref for HzrdCellHandle<'_, T> {
+impl<T> Deref for ReadHandle<'_, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         self.reference
     }
 }
 
-impl<T> Drop for HzrdCellHandle<'_, T> {
+impl<T> Drop for ReadHandle<'_, T> {
     fn drop(&mut self) {
         // SAFETY:
         // - Only shared references are valid
@@ -382,7 +457,7 @@ mod tests {
         let mut cell = HzrdCell::new(string);
 
         {
-            let handle: HzrdCellHandle<_> = cell.get();
+            let handle: ReadHandle<_> = cell.read_handle();
             assert_eq!(handle.len(), 0);
             assert_eq!(*handle, "");
         }
@@ -391,7 +466,7 @@ mod tests {
         cell.set(new_string);
 
         {
-            let handle: HzrdCellHandle<_> = cell.get();
+            let handle: ReadHandle<_> = cell.read_handle();
             assert_eq!(handle.len(), 12);
             assert_eq!(*handle, "Hello world!");
         }
@@ -407,7 +482,7 @@ mod tests {
         std::thread::scope(|s| {
             let mut cell_1 = HzrdCell::clone(&cell);
             s.spawn(move || {
-                let handle = cell_1.get();
+                let handle = cell_1.read_handle();
                 std::thread::sleep(Duration::from_millis(200));
                 assert_eq!(*handle, "");
             });
@@ -416,7 +491,7 @@ mod tests {
 
             let mut cell_2 = HzrdCell::clone(&cell);
             s.spawn(move || {
-                let handle = cell_2.get();
+                let handle = cell_2.read_handle();
                 assert_eq!(*handle, "");
                 drop(handle);
 
@@ -426,7 +501,7 @@ mod tests {
         });
 
         cell.reclaim();
-        assert_eq!(*cell.get(), "Hello world!");
+        assert_eq!(*cell.read_handle(), "Hello world!");
     }
 
     #[test]
@@ -447,9 +522,9 @@ mod tests {
     fn from_boxed() {
         let boxed = Box::new([1, 2, 3]);
         let mut cell = HzrdCell::from(boxed);
-        let arr = *cell.get();
+        let arr = *cell.read_handle();
         assert_eq!(arr, [1, 2, 3]);
         cell.set(arr.map(|x| x + 1));
-        assert_eq!(*cell.get(), [2, 3, 4]);
+        assert_eq!(*cell.read_handle(), [2, 3, 4]);
     }
 }
