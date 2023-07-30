@@ -11,6 +11,7 @@ use crate::utils::allocate;
 pub struct LinkedList<T> {
     head: Option<NonNull<Node<T>>>,
     tail: Option<NonNull<Node<T>>>,
+    len: usize,
 }
 
 #[derive(Debug)]
@@ -31,6 +32,7 @@ impl<T> LinkedList<T> {
         LinkedList {
             head: None,
             tail: None,
+            len: 0,
         }
     }
 
@@ -44,6 +46,7 @@ impl<T> LinkedList<T> {
         LinkedList {
             head: Some(ptr),
             tail: Some(ptr),
+            len: 1,
         }
     }
 
@@ -61,6 +64,7 @@ impl<T> LinkedList<T> {
         let ptr = allocate(node);
         unsafe { (*head.as_ptr()).prev = Some(ptr) };
         self.head = Some(ptr);
+        self.len += 1;
     }
 
     pub fn push_back(&mut self, value: T) {
@@ -77,6 +81,7 @@ impl<T> LinkedList<T> {
         let ptr = allocate(node);
         unsafe { (*tail.as_ptr()).next = Some(ptr) };
         self.tail = Some(ptr);
+        self.len += 1;
     }
 
     pub fn pop_front(&mut self) -> Option<T> {
@@ -98,6 +103,8 @@ impl<T> LinkedList<T> {
             self.head = None;
             self.tail = None;
         }
+
+        self.len -= 1;
 
         Some(value)
     }
@@ -122,6 +129,8 @@ impl<T> LinkedList<T> {
             self.tail = None;
         }
 
+        self.len -= 1;
+
         Some(value)
     }
 
@@ -142,6 +151,9 @@ impl<T> LinkedList<T> {
         } else {
             self.tail = prev;
         }
+
+        self.len -= 1;
+        
         value
     }
 
@@ -153,15 +165,21 @@ impl<T> LinkedList<T> {
         self.tail
     }
 
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
     pub fn is_empty(&self) -> bool {
-        debug_assert_eq!(self.head.is_none(), self.tail.is_none());
-        self.head.is_none()
+        debug_assert_eq!(self.len == 0, self.head.is_none());
+        debug_assert_eq!(self.len == 0, self.tail.is_none());
+        self.len == 0
     }
 
     pub fn iter(&self) -> Iter<T> {
         Iter {
             head: self.head,
             tail: self.tail,
+            len: self.len,
             marker: PhantomData,
         }
     }
@@ -170,6 +188,7 @@ impl<T> LinkedList<T> {
         IterMut {
             head: self.head,
             tail: self.tail,
+            len: self.len,
             marker: PhantomData,
         }
     }
@@ -217,6 +236,7 @@ impl<T> Iterator for LinkedList<T> {
 pub struct Iter<'a, T> {
     head: Option<NonNull<Node<T>>>,
     tail: Option<NonNull<Node<T>>>,
+    len: usize,
     marker: PhantomData<&'a T>,
 }
 
@@ -225,6 +245,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(head) = self.head {
+            self.len -= 1;
             unsafe {
                 self.head = (*head.as_ptr()).next;
                 Some(&(*head.as_ptr()).value)
@@ -233,11 +254,16 @@ impl<'a, T> Iterator for Iter<'a, T> {
             None
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.len, Some(self.len))
+    }
 }
 
 impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if let Some(tail) = self.tail {
+            self.len -= 1;
             unsafe {
                 self.tail = (*tail.as_ptr()).prev;
                 Some(&(*tail.as_ptr()).value)
@@ -248,9 +274,12 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
     }
 }
 
+impl<'a, T> ExactSizeIterator for Iter<'a, T> {}
+
 pub struct IterMut<'a, T> {
     head: Option<NonNull<Node<T>>>,
     tail: Option<NonNull<Node<T>>>,
+    len: usize,
     marker: PhantomData<&'a mut T>,
 }
 
@@ -259,6 +288,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(head) = self.head {
+            self.len -= 1;
             unsafe {
                 self.head = (*head.as_ptr()).next;
                 Some(&mut (*head.as_ptr()).value)
@@ -267,11 +297,16 @@ impl<'a, T> Iterator for IterMut<'a, T> {
             None
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.len, Some(self.len))
+    }
 }
 
 impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if let Some(tail) = self.tail {
+            self.len -= 1;
             unsafe {
                 self.tail = (*tail.as_ptr()).prev;
                 Some(&mut (*tail.as_ptr()).value)
@@ -281,6 +316,8 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
         }
     }
 }
+
+impl<'a, T> ExactSizeIterator for IterMut<'a, T> {}
 
 #[cfg(test)]
 mod tests {
@@ -370,5 +407,35 @@ mod tests {
             list.remove_node(middle);
             list.remove_node(last);
         }
+    }
+
+    #[test]
+    fn length() {
+        let mut list = LinkedList::from([1, 2, 3]);
+        assert_eq!(list.len, 3);
+        assert!(!list.is_empty());
+
+        list.push_front(0);
+        list.push_back(4);
+        assert_eq!(list.len, 5);
+        assert!(!list.is_empty());
+
+        list.pop_front().unwrap();
+        assert_eq!(list.len, 4);
+        assert!(!list.is_empty());
+        
+        list.pop_front().unwrap();
+        list.pop_back().unwrap();
+        assert_eq!(list.len, 2);
+        assert!(!list.is_empty());
+
+        list.pop_back().unwrap();
+        list.pop_back().unwrap();
+        assert_eq!(list.len, 0);
+        assert!(list.is_empty());
+
+        assert!(list.pop_back().is_none());
+        assert_eq!(list.len, 0);
+        assert!(list.is_empty());
     }
 }

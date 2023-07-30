@@ -65,6 +65,9 @@ impl<T> HzrdCell<T> {
         }
     }
 
+    /// Set the value of the cell
+    ///
+    /// This method may block
     pub fn set(&self, value: T) {
         // SAFETY: Only shared references to this are allowed
         let core = unsafe { self.inner.as_ref() };
@@ -80,6 +83,9 @@ impl<T> HzrdCell<T> {
         HzrdCellInner::__reclaim(&mut retired, &hazard_ptrs);
     }
 
+    /// Set the value of the cell, without reclaiming memory
+    ///
+    /// This method may block
     pub fn just_set(&self, value: T) {
         // SAFETY: Only shared references to this are allowed
         let core = unsafe { self.inner.as_ref() };
@@ -89,6 +95,8 @@ impl<T> HzrdCell<T> {
     }
 
     /// Reclaim available memory
+    ///
+    /// This method may block
     pub fn reclaim(&self) {
         // SAFETY: Only shared references to this are allowed
         let core = unsafe { self.inner.as_ref() };
@@ -100,6 +108,15 @@ impl<T> HzrdCell<T> {
         // SAFETY: Only shared references to this are allowed
         let core = unsafe { self.inner.as_ref() };
         core.try_reclaim();
+    }
+
+    /// Get the number of retired values (aka unfreed memory)
+    ///
+    /// This method may block
+    pub fn num_retired(&self) -> usize {
+        // SAFETY: Only shared references to this are allowed
+        let core = unsafe { self.inner.as_ref() };
+        core.retired.lock().unwrap().len()
     }
 }
 
@@ -349,5 +366,19 @@ mod tests {
 
         cell.reclaim();
         assert_eq!(*cell.get(), "Hello world!");
+    }
+
+    #[test]
+    fn manual_reclaim() {
+        let cell = HzrdCell::new([1, 2, 3]);
+
+        cell.just_set([4, 5, 6]);
+        assert_eq!(cell.num_retired(), 1);
+
+        cell.just_set([7, 8, 9]);
+        assert_eq!(cell.num_retired(), 2);
+
+        cell.reclaim();
+        assert_eq!(cell.num_retired(), 0);
     }
 }
