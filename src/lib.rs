@@ -69,6 +69,22 @@ impl<T> HzrdCell<T> {
         // SAFETY: Only shared references to this are allowed
         let core = unsafe { self.inner.as_ref() };
         let old_ptr = core.swap(value);
+
+        let mut retired = core.retired.lock().unwrap();
+        retired.push_back(RetiredPtr(old_ptr));
+
+        let Ok(hazard_ptrs) = core.hazard_ptrs.try_lock() else { 
+            return;
+        };
+
+        HzrdCellInner::__reclaim(&mut retired, &hazard_ptrs);
+    }
+
+    pub fn just_set(&self, value: T) {
+        // SAFETY: Only shared references to this are allowed
+        let core = unsafe { self.inner.as_ref() };
+        let old_ptr = core.swap(value);
+
         core.retired.lock().unwrap().push_back(RetiredPtr(old_ptr));
     }
 

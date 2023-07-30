@@ -22,7 +22,7 @@ pub struct Node<T> {
 
 impl<T> Node<T> {
     pub unsafe fn get_from_ptr(ptr: NonNull<Self>) -> *mut T {
-        &mut (*ptr.as_ptr()).value
+        std::ptr::addr_of_mut!((*ptr.as_ptr()).value)
     }
 }
 
