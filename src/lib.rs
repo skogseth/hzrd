@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr::NonNull;
@@ -114,17 +115,35 @@ pub struct HzrdCell<T> {
 }
 
 impl<T> HzrdCell<T> {
-    /// Construct a new [`HzrdCell`] with the given value
-    ///
-    /// The value will be allocated on the heap seperate of the metadata associated with the [`HzrdCell`].
-    /// It is therefore recommended to use [`HzrdCell::from`] if you already have a [`Box<T>`].
+    /** 
+    Construct a new [`HzrdCell`] with the given value
+    The value will be allocated on the heap seperate of the metadata associated with the [`HzrdCell`].
+    It is therefore recommended to use [`HzrdCell::from`] if you already have a [`Box<T>`].
+    
+    ```
+    use hzrd::HzrdCell;
+
+    let cell = HzrdCell::new(0);
+    # assert_eq!(cell.get(), 0); 
+    ```
+    */
     pub fn new(value: T) -> Self {
         HzrdCell::from(Box::new(value))
     }
 
-    /// Set the value of the cell
-    ///
-    /// This method may block after the value has been set.
+    /**
+    Set the value of the cell
+    
+    This method may block after the value has been set.
+
+    ```
+    use hzrd::HzrdCell;
+
+    let cell = HzrdCell::new(0);
+    cell.set(1);
+    assert_eq!(cell.get(), 1); 
+    ```
+    */
     pub fn set(&self, value: T) {
         // SAFETY: Only shared references to this are allowed
         let core = unsafe { self.inner.as_ref() };
@@ -208,6 +227,23 @@ impl<T> HzrdCell<T> {
         }
     }
 
+    /// Read contained value and map it
+    pub fn read_and_map<U, F: FnOnce(&T) -> U>(&self, f: F) -> U {
+        let (ptr, ptr_to_hazard_ptr) = self.__read();
+
+        // SAFETY: This pointer is held valid by the hazard pointer
+        let value = unsafe { &*ptr };
+
+        let output = f(value);
+
+        // We have now copied the value, so we can clear the hazard pointer 
+        // SAFETY: Trust me
+        let hazard_ptr: &HzrdPtr<T> = unsafe { &*ptr_to_hazard_ptr };
+        hazard_ptr.store(std::ptr::null_mut(), Ordering::SeqCst);
+
+        output
+    }
+
     /// Set the value of the cell, without reclaiming memory
     ///
     /// This method may block after the value has been set.
@@ -238,7 +274,7 @@ impl<T> HzrdCell<T> {
     /// Get the number of retired values (aka unfreed memory)
     ///
     /// This method may block
-    pub fn retired(&self) -> usize {
+    pub fn num_retired(&self) -> usize {
         // SAFETY: Only shared references to this are allowed
         let core = unsafe { self.inner.as_ref() };
         core.retired.lock().unwrap().len()
@@ -258,6 +294,12 @@ impl<T> Clone for HzrdCell<T> {
             node_ptr,
             marker: PhantomData,
         }
+    }
+}
+
+impl<T: Display> Display for HzrdCell<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.read_and_map(|x| x.fmt(f))
     }
 }
 
