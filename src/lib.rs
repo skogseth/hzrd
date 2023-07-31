@@ -10,22 +10,20 @@ mod utils;
 
 use crate::linked_list::{LinkedList, Node};
 use crate::utils::{allocate, free};
+use crate::utils::{HzrdPtr, RetiredPtr};
 
-/// Holds some address that is currently used (may be null)
-type HzrdPtr<T> = AtomicPtr<T>;
-
-/** 
+/**
 Holds a value that can be shared, and mutated, by multiple threads
 
 The main advantage of [`HzrdCell`] is that reading and writing to the value is lock-free.
-This is offset by increased memory use, a significant overhead for creating/destroying cells, 
+This is offset by increased memory use, a significant overhead for creating/destroying cells,
 as well as some... funkiness.
 
 [`HzrdCell`] is particularly nice to work with if the underlying type implements copy.
-The [`get`](HzrdCell::set) method is lock-free, and requires minimal overhead. 
+The [`get`](HzrdCell::set) method is lock-free, and requires minimal overhead.
 The [`set`](HzrdCell::set) method is mostly lock-free, meaning that the value is instantly updated,
-but there is some overhead following the swapping of the value which requires a lock to be held. 
-However, this lock holds no contention with the reading methods of the cell, 
+but there is some overhead following the swapping of the value which requires a lock to be held.
+However, this lock holds no contention with the reading methods of the cell,
 only the writing/reclamation methods.
 
 ```
@@ -70,8 +68,8 @@ assert_eq!(state.get(), State::Finished);
 # }
 ```
 
-One "funky" thing about [`HzrdCell`] is that grabbing a shared borrow 
-to the underlying value is done via the [`ReadHandle`], and aquiring this 
+One "funky" thing about [`HzrdCell`] is that grabbing a shared borrow
+to the underlying value is done via the [`ReadHandle`], and aquiring this
 requires an exlusive (aka mutable) borrow to the cell. This means the cell must be mutable.
 Here is an example for a non-copy type, which in turn means the [`ReadHandle`] is used read the value.
 
@@ -115,16 +113,16 @@ pub struct HzrdCell<T> {
 }
 
 impl<T> HzrdCell<T> {
-    /** 
+    /**
     Construct a new [`HzrdCell`] with the given value
     The value will be allocated on the heap seperate of the metadata associated with the [`HzrdCell`].
     It is therefore recommended to use [`HzrdCell::from`] if you already have a [`Box<T>`].
-    
+
     ```
     use hzrd::HzrdCell;
 
     let cell = HzrdCell::new(0);
-    # assert_eq!(cell.get(), 0); 
+    # assert_eq!(cell.get(), 0);
     ```
     */
     pub fn new(value: T) -> Self {
@@ -133,7 +131,7 @@ impl<T> HzrdCell<T> {
 
     /**
     Set the value of the cell
-    
+
     This method may block after the value has been set.
 
     ```
@@ -141,7 +139,7 @@ impl<T> HzrdCell<T> {
 
     let cell = HzrdCell::new(0);
     cell.set(1);
-    assert_eq!(cell.get(), 1); 
+    assert_eq!(cell.get(), 1);
     ```
     */
     pub fn set(&self, value: T) {
@@ -150,7 +148,7 @@ impl<T> HzrdCell<T> {
         let old_ptr = core.swap(value);
 
         let mut retired = core.retired.lock().unwrap();
-        retired.push_back(RetiredPtr(old_ptr));
+        retired.push_back(RetiredPtr::new(old_ptr));
 
         let Ok(hzrd_ptrs) = core.hzrd_ptrs.try_lock() else {
             return;
@@ -179,15 +177,15 @@ impl<T> HzrdCell<T> {
         let hzrd_ptr = unsafe { &*ptr_to_hzrd_ptr };
 
         let mut ptr = core.value.load(Ordering::SeqCst);
-        hzrd_ptr.store(ptr, Ordering::SeqCst);
+        hzrd_ptr.store(ptr);
 
-        // Now need to keep updating it until consistent state
+        // Now need to keep updating it until it is in a consistent state
         loop {
             ptr = core.value.load(Ordering::SeqCst);
-            if std::ptr::eq(ptr, hzrd_ptr.load(Ordering::SeqCst)) {
+            if std::ptr::eq(ptr, hzrd_ptr.get()) {
                 break;
             } else {
-                hzrd_ptr.store(ptr, Ordering::SeqCst);
+                hzrd_ptr.store(ptr);
             }
         }
 
@@ -195,16 +193,19 @@ impl<T> HzrdCell<T> {
     }
 
     /// Get the value of the cell (requires the type to be [`Copy`])
-    pub fn get(&self) -> T where T: Copy {
+    pub fn get(&self) -> T
+    where
+        T: Copy,
+    {
         let (ptr, ptr_to_hzrd_ptr) = self.__read();
 
         // SAFETY: This pointer is held valid by the hazard pointer
         let value = unsafe { *ptr };
 
-        // We have now copied the value, so we can clear the hazard pointer 
+        // We have now copied the value, so we can clear the hazard pointer
         // SAFETY: Trust me
         let hzrd_ptr: &HzrdPtr<T> = unsafe { &*ptr_to_hzrd_ptr };
-        hzrd_ptr.store(std::ptr::null_mut(), Ordering::SeqCst);
+        hzrd_ptr.clear();
 
         value
     }
@@ -236,10 +237,10 @@ impl<T> HzrdCell<T> {
 
         let output = f(value);
 
-        // We have now copied the value, so we can clear the hazard pointer 
+        // We have now copied the value, so we can clear the hazard pointer
         // SAFETY: Trust me
         let hzrd_ptr: &HzrdPtr<T> = unsafe { &*ptr_to_hzrd_ptr };
-        hzrd_ptr.store(std::ptr::null_mut(), Ordering::SeqCst);
+        hzrd_ptr.clear();
 
         output
     }
@@ -252,7 +253,7 @@ impl<T> HzrdCell<T> {
         let core = unsafe { self.inner.as_ref() };
         let old_ptr = core.swap(value);
 
-        core.retired.lock().unwrap().push_back(RetiredPtr(old_ptr));
+        core.retired.lock().unwrap().push_back(RetiredPtr::new(old_ptr));
     }
 
     /// Reclaim available memory
@@ -357,16 +358,7 @@ impl<T> Drop for ReadHandle<'_, T> {
         // - Only shared references are valid
         // - Pointer is held alive by lifetime 'cell
         let hzrd_ptr = unsafe { self.hzrd_ptr.as_ref() };
-        hzrd_ptr.store(std::ptr::null_mut(), Ordering::SeqCst);
-    }
-}
-
-struct RetiredPtr<T>(NonNull<T>);
-
-impl<T> Drop for RetiredPtr<T> {
-    fn drop(&mut self) {
-        // SAFETY: No reference to this when dropped
-        unsafe { free(self.0) };
+        hzrd_ptr.clear();
     }
 }
 
@@ -383,7 +375,7 @@ struct HzrdCellInner<T> {
 
 impl<T> HzrdCellInner<T> {
     pub fn new(boxed: Box<T>) -> (Self, NonNull<Node<HzrdPtr<T>>>) {
-        let hzrd_ptr = HzrdPtr::new(std::ptr::null_mut());
+        let hzrd_ptr = HzrdPtr::new();
         let ptr = Box::into_raw(boxed);
 
         let list = LinkedList::single(hzrd_ptr);
@@ -401,7 +393,7 @@ impl<T> HzrdCellInner<T> {
 
     pub fn add(&self) -> NonNull<Node<HzrdPtr<T>>> {
         let mut guard = self.hzrd_ptrs.lock().unwrap();
-        let hzrd_ptr = HzrdPtr::new(std::ptr::null_mut());
+        let hzrd_ptr = HzrdPtr::new();
         guard.push_back(hzrd_ptr);
         // SAFETY: There must be a tail node at this point
         unsafe { guard.tail_node().unwrap_unchecked() }
@@ -415,18 +407,18 @@ impl<T> HzrdCellInner<T> {
         unsafe { NonNull::new_unchecked(old_raw_ptr) }
     }
 
-    fn __reclaim(retired: &mut LinkedList<RetiredPtr<T>>, hzrd_ptrs: &LinkedList<HzrdPtr<T>>) {
+    fn __reclaim(retired_ptrs: &mut LinkedList<RetiredPtr<T>>, hzrd_ptrs: &LinkedList<HzrdPtr<T>>) {
         let mut still_active = LinkedList::new();
-        'outer: while let Some(node) = retired.pop_front() {
+        'outer: while let Some(retired_ptr) = retired_ptrs.pop_front() {
             for hzrd_ptr in hzrd_ptrs.iter() {
-                if std::ptr::eq(node.0.as_ptr(), hzrd_ptr.load(Ordering::SeqCst)) {
-                    still_active.push_back(node);
+                if std::ptr::eq(retired_ptr.as_ptr(), hzrd_ptr.get()) {
+                    still_active.push_back(retired_ptr);
                     continue 'outer;
                 }
             }
         }
 
-        *retired = still_active;
+        *retired_ptrs = still_active;
     }
 
     /// Reclaim available memory
