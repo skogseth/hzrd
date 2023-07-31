@@ -152,11 +152,11 @@ impl<T> HzrdCell<T> {
         let mut retired = core.retired.lock().unwrap();
         retired.push_back(RetiredPtr(old_ptr));
 
-        let Ok(hazard_ptrs) = core.hazard_ptrs.try_lock() else {
+        let Ok(hzrd_ptrs) = core.hzrd_ptrs.try_lock() else {
             return;
         };
 
-        HzrdCellInner::__reclaim(&mut retired, &hazard_ptrs);
+        HzrdCellInner::__reclaim(&mut retired, &hzrd_ptrs);
     }
 
     /// Replace the contained value with a new value, returning the old
@@ -173,38 +173,38 @@ impl<T> HzrdCell<T> {
         let core = unsafe { self.inner.as_ref() };
 
         // SAFETY: This thread has exclusive access to this hazard ptr
-        let ptr_to_hazard_ptr = unsafe { Node::get_from_ptr(self.node_ptr) };
+        let ptr_to_hzrd_ptr = unsafe { Node::get_from_ptr(self.node_ptr) };
 
         // SAFETY: Same as above
-        let hazard_ptr = unsafe { &*ptr_to_hazard_ptr };
+        let hzrd_ptr = unsafe { &*ptr_to_hzrd_ptr };
 
         let mut ptr = core.value.load(Ordering::SeqCst);
-        hazard_ptr.store(ptr, Ordering::SeqCst);
+        hzrd_ptr.store(ptr, Ordering::SeqCst);
 
         // Now need to keep updating it until consistent state
         loop {
             ptr = core.value.load(Ordering::SeqCst);
-            if std::ptr::eq(ptr, hazard_ptr.load(Ordering::SeqCst)) {
+            if std::ptr::eq(ptr, hzrd_ptr.load(Ordering::SeqCst)) {
                 break;
             } else {
-                hazard_ptr.store(ptr, Ordering::SeqCst);
+                hzrd_ptr.store(ptr, Ordering::SeqCst);
             }
         }
 
-        (ptr, ptr_to_hazard_ptr)
+        (ptr, ptr_to_hzrd_ptr)
     }
 
     /// Get the value of the cell (requires the type to be [`Copy`])
     pub fn get(&self) -> T where T: Copy {
-        let (ptr, ptr_to_hazard_ptr) = self.__read();
+        let (ptr, ptr_to_hzrd_ptr) = self.__read();
 
         // SAFETY: This pointer is held valid by the hazard pointer
         let value = unsafe { *ptr };
 
         // We have now copied the value, so we can clear the hazard pointer 
         // SAFETY: Trust me
-        let hazard_ptr: &HzrdPtr<T> = unsafe { &*ptr_to_hazard_ptr };
-        hazard_ptr.store(std::ptr::null_mut(), Ordering::SeqCst);
+        let hzrd_ptr: &HzrdPtr<T> = unsafe { &*ptr_to_hzrd_ptr };
+        hzrd_ptr.store(std::ptr::null_mut(), Ordering::SeqCst);
 
         value
     }
@@ -216,20 +216,20 @@ impl<T> HzrdCell<T> {
     /// There is no locking mechanism needed to grab this handle, although there
     /// might be a short wait if the read overlaps with a write.
     pub fn read_handle(&mut self) -> ReadHandle<'_, T> {
-        let (ptr, ptr_to_hazard_ptr) = self.__read();
+        let (ptr, ptr_to_hzrd_ptr) = self.__read();
 
         ReadHandle {
             // SAFETY: Pointer is now held valid by the hazard ptr
             reference: unsafe { &*ptr },
 
             // SAFETY: Always non-null
-            hazard_ptr: unsafe { NonNull::new_unchecked(ptr_to_hazard_ptr) },
+            hzrd_ptr: unsafe { NonNull::new_unchecked(ptr_to_hzrd_ptr) },
         }
     }
 
     /// Read contained value and map it
     pub fn read_and_map<U, F: FnOnce(&T) -> U>(&self, f: F) -> U {
-        let (ptr, ptr_to_hazard_ptr) = self.__read();
+        let (ptr, ptr_to_hzrd_ptr) = self.__read();
 
         // SAFETY: This pointer is held valid by the hazard pointer
         let value = unsafe { &*ptr };
@@ -238,8 +238,8 @@ impl<T> HzrdCell<T> {
 
         // We have now copied the value, so we can clear the hazard pointer 
         // SAFETY: Trust me
-        let hazard_ptr: &HzrdPtr<T> = unsafe { &*ptr_to_hazard_ptr };
-        hazard_ptr.store(std::ptr::null_mut(), Ordering::SeqCst);
+        let hzrd_ptr: &HzrdPtr<T> = unsafe { &*ptr_to_hzrd_ptr };
+        hzrd_ptr.store(std::ptr::null_mut(), Ordering::SeqCst);
 
         output
     }
@@ -322,12 +322,12 @@ impl<T> Drop for HzrdCell<T> {
             let core = unsafe { self.inner.as_ref() };
 
             // TODO: Handle panic?
-            let mut hazard_ptrs = core.hazard_ptrs.lock().unwrap();
+            let mut hzrd_ptrs = core.hzrd_ptrs.lock().unwrap();
 
             // SAFETY: The node ptr is guaranteed to be a valid pointer to an element in the list
-            let _ = unsafe { hazard_ptrs.remove_node(self.node_ptr) };
+            let _ = unsafe { hzrd_ptrs.remove_node(self.node_ptr) };
 
-            hazard_ptrs.is_empty()
+            hzrd_ptrs.is_empty()
         };
 
         if should_drop_inner {
@@ -341,7 +341,7 @@ impl<T> Drop for HzrdCell<T> {
 
 pub struct ReadHandle<'cell, T> {
     reference: &'cell T,
-    hazard_ptr: NonNull<HzrdPtr<T>>,
+    hzrd_ptr: NonNull<HzrdPtr<T>>,
 }
 
 impl<T> Deref for ReadHandle<'_, T> {
@@ -356,8 +356,8 @@ impl<T> Drop for ReadHandle<'_, T> {
         // SAFETY:
         // - Only shared references are valid
         // - Pointer is held alive by lifetime 'cell
-        let hazard_ptr = unsafe { self.hazard_ptr.as_ref() };
-        hazard_ptr.store(std::ptr::null_mut(), Ordering::SeqCst);
+        let hzrd_ptr = unsafe { self.hzrd_ptr.as_ref() };
+        hzrd_ptr.store(std::ptr::null_mut(), Ordering::SeqCst);
     }
 }
 
@@ -372,27 +372,27 @@ impl<T> Drop for RetiredPtr<T> {
 
 /// Shared heap allocated object for `HzrdCell`
 ///
-/// The `hazard_ptrs` keep track of pointers that are in use, and cannot be freed
+/// The `hzrd_ptrs` keep track of pointers that are in use, and cannot be freed
 /// There is one node per `HzrdCell`, which means the list also keeps track
 /// of the number of active `HzrdCell`s (akin to a very inefficent atomic counter).
 struct HzrdCellInner<T> {
     value: AtomicPtr<T>,
-    hazard_ptrs: Mutex<LinkedList<HzrdPtr<T>>>,
+    hzrd_ptrs: Mutex<LinkedList<HzrdPtr<T>>>,
     retired: Mutex<LinkedList<RetiredPtr<T>>>,
 }
 
 impl<T> HzrdCellInner<T> {
     pub fn new(boxed: Box<T>) -> (Self, NonNull<Node<HzrdPtr<T>>>) {
-        let hazard_ptr = HzrdPtr::new(std::ptr::null_mut());
+        let hzrd_ptr = HzrdPtr::new(std::ptr::null_mut());
         let ptr = Box::into_raw(boxed);
 
-        let list = LinkedList::single(hazard_ptr);
+        let list = LinkedList::single(hzrd_ptr);
         // SAFETY: There must be a head node at this point
         let node_ptr = unsafe { list.head_node().unwrap_unchecked() };
 
         let core = Self {
             value: AtomicPtr::new(ptr),
-            hazard_ptrs: Mutex::new(list),
+            hzrd_ptrs: Mutex::new(list),
             retired: Mutex::new(LinkedList::new()),
         };
 
@@ -400,9 +400,9 @@ impl<T> HzrdCellInner<T> {
     }
 
     pub fn add(&self) -> NonNull<Node<HzrdPtr<T>>> {
-        let mut guard = self.hazard_ptrs.lock().unwrap();
-        let hazard_ptr = HzrdPtr::new(std::ptr::null_mut());
-        guard.push_back(hazard_ptr);
+        let mut guard = self.hzrd_ptrs.lock().unwrap();
+        let hzrd_ptr = HzrdPtr::new(std::ptr::null_mut());
+        guard.push_back(hzrd_ptr);
         // SAFETY: There must be a tail node at this point
         unsafe { guard.tail_node().unwrap_unchecked() }
     }
@@ -415,11 +415,11 @@ impl<T> HzrdCellInner<T> {
         unsafe { NonNull::new_unchecked(old_raw_ptr) }
     }
 
-    fn __reclaim(retired: &mut LinkedList<RetiredPtr<T>>, hazard_ptrs: &LinkedList<HzrdPtr<T>>) {
+    fn __reclaim(retired: &mut LinkedList<RetiredPtr<T>>, hzrd_ptrs: &LinkedList<HzrdPtr<T>>) {
         let mut still_active = LinkedList::new();
         'outer: while let Some(node) = retired.pop_front() {
-            for hazard_ptr in hazard_ptrs.iter() {
-                if std::ptr::eq(node.0.as_ptr(), hazard_ptr.load(Ordering::SeqCst)) {
+            for hzrd_ptr in hzrd_ptrs.iter() {
+                if std::ptr::eq(node.0.as_ptr(), hzrd_ptr.load(Ordering::SeqCst)) {
                     still_active.push_back(node);
                     continue 'outer;
                 }
@@ -443,9 +443,9 @@ impl<T> HzrdCellInner<T> {
         }
 
         // Wait for access to the hazard pointers
-        let hazard_ptrs = self.hazard_ptrs.lock().unwrap();
+        let hzrd_ptrs = self.hzrd_ptrs.lock().unwrap();
 
-        HzrdCellInner::__reclaim(&mut retired, &hazard_ptrs);
+        HzrdCellInner::__reclaim(&mut retired, &hzrd_ptrs);
     }
 
     /// Try to reclaim memory, but don't wait for the shared lock to do so
@@ -462,11 +462,11 @@ impl<T> HzrdCellInner<T> {
         }
 
         // Check if the hazard pointers are available, if not exit
-        let Ok(hazard_ptrs) = self.hazard_ptrs.try_lock() else {
+        let Ok(hzrd_ptrs) = self.hzrd_ptrs.try_lock() else {
             return;
         };
 
-        HzrdCellInner::__reclaim(&mut retired, &hazard_ptrs);
+        HzrdCellInner::__reclaim(&mut retired, &hzrd_ptrs);
     }
 }
 
