@@ -41,7 +41,7 @@ impl<T> RetiredPtr<T> {
     pub fn new(ptr: NonNull<T>) -> Self {
         RetiredPtr(ptr)
     }
-    
+
     pub fn as_ptr(&self) -> *mut T {
         self.0.as_ptr()
     }
@@ -53,4 +53,3 @@ impl<T> Drop for RetiredPtr<T> {
         unsafe { free(self.0) };
     }
 }
-

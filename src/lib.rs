@@ -128,9 +128,10 @@ impl<T> HzrdCell<T> {
     It is therefore recommended to use [`HzrdCell::from`] if you already have a [`Box<T>`].
 
     ```
-    use hzrd::HzrdCell;
-
+    # use hzrd::HzrdCell;
+    #
     let cell = HzrdCell::new(0);
+    #
     # assert_eq!(cell.get(), 0);
     ```
     */
@@ -144,11 +145,12 @@ impl<T> HzrdCell<T> {
     This method may block after the value has been set.
 
     ```
-    use hzrd::HzrdCell;
-
+    # use hzrd::HzrdCell;
+    #
     let cell = HzrdCell::new(0);
     cell.set(1);
-    assert_eq!(cell.get(), 1);
+    #
+    # assert_eq!(cell.get(), 1);
     ```
     */
     pub fn set(&self, value: T) {
@@ -174,7 +176,16 @@ impl<T> HzrdCell<T> {
         todo!()
     }
 
-    /// Get the value of the cell (requires the type to be [`Copy`])
+    /**
+    Get the value of the cell (requires the type to be [`Copy`])
+
+    ```
+    # use hzrd::HzrdCell;
+    #
+    let cell = HzrdCell::new(100);
+    assert_eq!(cell.get(), 100);
+    ```
+    */
     pub fn get(&self) -> T
     where
         T: Copy,
@@ -183,7 +194,7 @@ impl<T> HzrdCell<T> {
         let hzrd_ptr = self.hzrd_ptr();
 
         // SAFETY:
-        // - We are the owner of the hazard pointer 
+        // - We are the owner of the hazard pointer
         // - Value is immediately copied, and ReadHandle is dropped
         unsafe { *core.read(hzrd_ptr) }
     }
@@ -194,15 +205,46 @@ impl<T> HzrdCell<T> {
     /// except the [`ReadHandle`] only accepts reading the value.
     /// There is no locking mechanism needed to grab this handle, although there
     /// might be a short wait if the read overlaps with a write.
+    ///
+    /// # Behavior
+    /// Acquiring a [`ReadHandle`] does, maybe surprisingly, require a mutable borrow.
+    /// This is caused by a core invariants of the cell: There can only be one read at any given point.
+    /// This exclusivity is usually associated with mutation, but for the [`HzrdCell`]
+    /// (as well as [`std::cell::Cell`]) this relationship is inversed in order to bend the rules of mutation.
+    /// To remedy some of this "strangeness" there are multiple helper functions to avoid directly relying on
+    /// [`ReadHandle`]s: [`get`](Self::get) [`cloned`](Self::cloned), [`read_and_map`](Self::read_and_map), etc.
     pub fn read_handle(&mut self) -> ReadHandle<'_, T> {
         let core = self.core();
         let hzrd_ptr = self.hzrd_ptr();
-        
+
         // SAFETY:
-        // - We are the owner of the hazard pointer 
+        // - We are the owner of the hazard pointer
         // - ReadHandle holds exlusive reference via &mut, meaning
         //   no other accesses to hazard pointer before it is dropped
         unsafe { core.read(hzrd_ptr) }
+    }
+
+    /**
+    Read the contained value and clone it (requires type to be [`Clone`])
+
+    ```
+    # use hzrd::HzrdCell;
+    #
+    let cell = HzrdCell::new([1, 2, 3]);
+    assert_eq!(cell.cloned(), [1, 2, 3]);
+    ```
+    */
+    pub fn cloned(&self) -> T
+    where
+        T: Clone,
+    {
+        let core = self.core();
+        let hzrd_ptr = self.hzrd_ptr();
+
+        // SAFETY:
+        // - We are the owner of the hazard pointer
+        // - Value is immediately cloned, and ReadHandle is dropped
+        unsafe { core.read(hzrd_ptr).clone() }
     }
 
     /// Read contained value and map it
@@ -211,7 +253,7 @@ impl<T> HzrdCell<T> {
         let hzrd_ptr = self.hzrd_ptr();
 
         // SAFETY:
-        // - We are the owner of the hazard pointer 
+        // - We are the owner of the hazard pointer
         // - We don't access the hazard pointer for the rest of the function
         let value = unsafe { core.read(hzrd_ptr) };
 
@@ -224,7 +266,10 @@ impl<T> HzrdCell<T> {
     pub fn just_set(&self, value: T) {
         let core = self.core();
         let old_ptr = core.swap(value);
-        core.retired.lock().unwrap().push_back(RetiredPtr::new(old_ptr));
+        core.retired
+            .lock()
+            .unwrap()
+            .push_back(RetiredPtr::new(old_ptr));
     }
 
     /// Reclaim available memory

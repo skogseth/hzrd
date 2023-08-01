@@ -2,9 +2,9 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
 
-use crate::ReadHandle;
 use crate::linked_list::{LinkedList, Node};
 use crate::utils::{HzrdPtr, RetiredPtr};
+use crate::ReadHandle;
 
 /// Shared heap allocated object for `HzrdCell`
 ///
@@ -36,7 +36,7 @@ impl<T> HzrdCellInner<T> {
     }
 
     /// Reads the contained value and keeps it valid through the hazard pointer
-    /// SAFETY: 
+    /// SAFETY:
     /// - Can only be called by the owner of the hazard pointer
     /// - The owner cannot call this again until the [`ReadHandle`] has been dropped
     pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr<T>) -> ReadHandle<'hzrd, T> {
@@ -122,7 +122,10 @@ impl<T> Drop for HzrdCellInner<T> {
     }
 }
 
-pub fn reclaim<T>(retired_ptrs: &mut LinkedList<RetiredPtr<T>>, hzrd_ptrs: &LinkedList<HzrdPtr<T>>) {
+pub fn reclaim<T>(
+    retired_ptrs: &mut LinkedList<RetiredPtr<T>>,
+    hzrd_ptrs: &LinkedList<HzrdPtr<T>>,
+) {
     let mut still_active = LinkedList::new();
     'outer: while let Some(retired_ptr) = retired_ptrs.pop_front() {
         for hzrd_ptr in hzrd_ptrs.iter() {
@@ -135,4 +138,3 @@ pub fn reclaim<T>(retired_ptrs: &mut LinkedList<RetiredPtr<T>>, hzrd_ptrs: &Link
 
     *retired_ptrs = still_active;
 }
-
