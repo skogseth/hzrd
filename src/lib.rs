@@ -1,3 +1,9 @@
+/*!
+This crate provides a safe API for shared mutability using hazard pointers for memory reclamation.
+
+The main entrypoint to this crate is the [`HzrdCell`], which provides an API similar to that of [`std::cell::Cell`].
+*/
+
 use std::fmt::Display;
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -247,7 +253,27 @@ impl<T> HzrdCell<T> {
         unsafe { core.read(hzrd_ptr).clone() }
     }
 
-    /// Read contained value and map it
+    /**
+    Read contained value and map it
+    
+    ```
+    # use hzrd::HzrdCell;
+    #
+    let cell = HzrdCell::new([1, 2, 3]);
+    let mut vec = cell.read_and_map(|arr| arr[..].to_owned());
+    vec.push(4);
+    assert_eq!(vec, [1, 2, 3, 4]);
+    ```
+
+    Note that the output cannot hold a reference to the input (see [`ReadHandle`] for why)
+    ```compile_fail
+    # use hzrd::HzrdCell;
+    #
+    let cell = HzrdCell::new(String::from("Hello, world!"));
+    let bytes = cell.read_and_map(|s| s.as_bytes()); // <- tries to hold on to reference
+    # let _ = bytes;
+    ```
+    */
     pub fn read_and_map<U, F: FnOnce(&T) -> U>(&self, f: F) -> U {
         let core = self.core();
         let hzrd_ptr = self.hzrd_ptr();
@@ -296,9 +322,7 @@ unsafe impl<T: Send> Send for HzrdCell<T> {}
 
 impl<T> Clone for HzrdCell<T> {
     fn clone(&self) -> Self {
-        // SAFETY: We can always get a shared reference to this
-        let core = unsafe { self.inner.as_ref() };
-        let node_ptr = core.add();
+        let node_ptr = self.core().add();
 
         HzrdCell {
             inner: self.inner,
@@ -329,13 +353,12 @@ impl<T> Drop for HzrdCell<T> {
     fn drop(&mut self) {
         // SAFETY: We scope this so that all references/pointers are dropped before inner is dropped
         let should_drop_inner = {
-            // SAFETY: We can always get a shared reference to this
-            let core = unsafe { self.inner.as_ref() };
+            let core = self.core();
 
             // TODO: Handle panic?
             let mut hzrd_ptrs = core.hzrd_ptrs.lock().unwrap();
 
-            // SAFETY: The node ptr is guaranteed to be a valid pointer to an element in the list
+            // SAFETY: The node is exclusively owned by the current cell
             let _ = unsafe { hzrd_ptrs.remove_node(self.node_ptr) };
 
             hzrd_ptrs.is_empty()
