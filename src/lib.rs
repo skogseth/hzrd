@@ -2,7 +2,6 @@ use std::fmt::Display;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr::NonNull;
-use std::sync::atomic::Ordering;
 
 mod core;
 mod linked_list;
@@ -22,10 +21,9 @@ as well as some... funkiness.
 
 [`HzrdCell`] is particularly nice to work with if the underlying type implements copy.
 The [`get`](HzrdCell::set) method is lock-free, and requires minimal overhead.
-The [`set`](HzrdCell::set) method is mostly lock-free, meaning that the value is instantly updated,
-but there is some overhead following the swapping of the value which requires a lock to be held.
-However, this lock holds no contention with the reading methods of the cell,
-only the writing/reclamation methods.
+The [`set`](HzrdCell::set) method is mostly lock-free: The value is instantly updated,
+but there is some overhead following the swap which requires a lock to be acquired.
+But, as stated above, this lock holds no contention with the reading methods of the cell.
 
 ```
 # fn main() -> Result<(), &'static str> {
@@ -69,17 +67,14 @@ assert_eq!(state.get(), State::Finished);
 # }
 ```
 
-One "funky" thing about [`HzrdCell`] is that grabbing a shared borrow
-to the underlying value is done via the [`ReadHandle`], and aquiring this
-requires an exlusive (aka mutable) borrow to the cell. This means the cell must be mutable.
-Here is an example for a non-copy type, which in turn means the [`ReadHandle`] is used read the value.
+If you want to immutably borrow the underlying value then this is done by acquiring a [`ReadHandle`]. At this point the [`HzrdCell`] shows off some of its "funkiness". Acquiring a [`ReadHandle`] requires an exlusive (aka mutable) borrow to the cell, which in turn means the cell must be marked as mutable. Here is an example for a non-copy type, where a [`ReadHandle`] is acquired and used.
 
 ```
 # fn main() -> Result<(), &'static str> {
 use hzrd::HzrdCell;
 
 let string = String::from("Hello, world!");
-let mut cell = HzrdCell::new(string);
+let cell = HzrdCell::new(string);
 
 // Notice the strangeness that aquiring the `ReadHandle` requires mut
 let mut cell_1 = HzrdCell::clone(&cell);
@@ -97,20 +92,33 @@ let cell_2 = HzrdCell::clone(&cell);
 let handle_2 = std::thread::spawn(move || {
     cell_2.set(String::new());
 });
-
-handle_1.join().map_err(|_| "Thread 1 failed")?;
-handle_2.join().map_err(|_| "Thread 2 failed")?;
-
-assert!(cell.read_handle().is_empty());
+#
+#     handle_1.join().map_err(|_| "Thread 1 failed")?;
+#     handle_2.join().map_err(|_| "Thread 2 failed")?;
 #
 #     Ok(())
 # }
 ```
+
+There is no way to acquire a mutable borrow to the underlying value as that inherently requires locking the value.
 */
 pub struct HzrdCell<T> {
     inner: NonNull<HzrdCellInner<T>>,
     node_ptr: NonNull<Node<HzrdPtr<T>>>,
     marker: PhantomData<T>,
+}
+
+// Private methods
+impl<T> HzrdCell<T> {
+    fn core(&self) -> &HzrdCellInner<T> {
+        // SAFETY: Only shared references to this are allowed
+        unsafe { self.inner.as_ref() }
+    }
+
+    fn hzrd_ptr(&self) -> &HzrdPtr<T> {
+        // SAFETY: This pointer is valid for as long as this cell is
+        unsafe { &*Node::get_from_ptr(self.node_ptr) }
+    }
 }
 
 impl<T> HzrdCell<T> {
@@ -144,8 +152,7 @@ impl<T> HzrdCell<T> {
     ```
     */
     pub fn set(&self, value: T) {
-        // SAFETY: Only shared references to this are allowed
-        let core = unsafe { self.inner.as_ref() };
+        let core = self.core();
         let old_ptr = core.swap(value);
 
         let mut retired = core.retired.lock().unwrap();
@@ -161,36 +168,10 @@ impl<T> HzrdCell<T> {
     /// Replace the contained value with a new value, returning the old
     ///
     /// This will block until all [`ReadHandle`]s have been dropped
+    #[doc(hidden)]
     pub fn replace(&self, value: T) -> T {
         let _ = value;
         todo!()
-    }
-
-    /// Reads the contained value and updates the associated [`HzrdPtr`] returning a pointer to both
-    fn __read(&self) -> (*mut T, *mut HzrdPtr<T>) {
-        // SAFETY: These are only ever grabbed as shared
-        let core = unsafe { self.inner.as_ref() };
-
-        // SAFETY: This thread has exclusive access to this hazard ptr
-        let ptr_to_hzrd_ptr = unsafe { Node::get_from_ptr(self.node_ptr) };
-
-        // SAFETY: Same as above
-        let hzrd_ptr = unsafe { &*ptr_to_hzrd_ptr };
-
-        let mut ptr = core.value.load(Ordering::SeqCst);
-        hzrd_ptr.store(ptr);
-
-        // Now need to keep updating it until it is in a consistent state
-        loop {
-            ptr = core.value.load(Ordering::SeqCst);
-            if std::ptr::eq(ptr, hzrd_ptr.get()) {
-                break;
-            } else {
-                hzrd_ptr.store(ptr);
-            }
-        }
-
-        (ptr, ptr_to_hzrd_ptr)
     }
 
     /// Get the value of the cell (requires the type to be [`Copy`])
@@ -198,17 +179,13 @@ impl<T> HzrdCell<T> {
     where
         T: Copy,
     {
-        let (ptr, ptr_to_hzrd_ptr) = self.__read();
+        let core = self.core();
+        let hzrd_ptr = self.hzrd_ptr();
 
-        // SAFETY: This pointer is held valid by the hazard pointer
-        let value = unsafe { *ptr };
-
-        // We have now copied the value, so we can clear the hazard pointer
-        // SAFETY: Trust me
-        let hzrd_ptr: &HzrdPtr<T> = unsafe { &*ptr_to_hzrd_ptr };
-        hzrd_ptr.clear();
-
-        value
+        // SAFETY:
+        // - We are the owner of the hazard pointer 
+        // - Value is immediately copied, and ReadHandle is dropped
+        unsafe { *core.read(hzrd_ptr) }
     }
 
     /// Get a handle to read the value held by the `HzrdCell`
@@ -218,42 +195,35 @@ impl<T> HzrdCell<T> {
     /// There is no locking mechanism needed to grab this handle, although there
     /// might be a short wait if the read overlaps with a write.
     pub fn read_handle(&mut self) -> ReadHandle<'_, T> {
-        let (ptr, ptr_to_hzrd_ptr) = self.__read();
-
-        ReadHandle {
-            // SAFETY: Pointer is now held valid by the hazard ptr
-            reference: unsafe { &*ptr },
-
-            // SAFETY: Always non-null
-            hzrd_ptr: unsafe { NonNull::new_unchecked(ptr_to_hzrd_ptr) },
-        }
+        let core = self.core();
+        let hzrd_ptr = self.hzrd_ptr();
+        
+        // SAFETY:
+        // - We are the owner of the hazard pointer 
+        // - ReadHandle holds exlusive reference via &mut, meaning
+        //   no other accesses to hazard pointer before it is dropped
+        unsafe { core.read(hzrd_ptr) }
     }
 
     /// Read contained value and map it
     pub fn read_and_map<U, F: FnOnce(&T) -> U>(&self, f: F) -> U {
-        let (ptr, ptr_to_hzrd_ptr) = self.__read();
+        let core = self.core();
+        let hzrd_ptr = self.hzrd_ptr();
 
-        // SAFETY: This pointer is held valid by the hazard pointer
-        let value = unsafe { &*ptr };
+        // SAFETY:
+        // - We are the owner of the hazard pointer 
+        // - We don't access the hazard pointer for the rest of the function
+        let value = unsafe { core.read(hzrd_ptr) };
 
-        let output = f(value);
-
-        // We have now copied the value, so we can clear the hazard pointer
-        // SAFETY: Trust me
-        let hzrd_ptr: &HzrdPtr<T> = unsafe { &*ptr_to_hzrd_ptr };
-        hzrd_ptr.clear();
-
-        output
+        f(&value)
     }
 
     /// Set the value of the cell, without reclaiming memory
     ///
     /// This method may block after the value has been set.
     pub fn just_set(&self, value: T) {
-        // SAFETY: Only shared references to this are allowed
-        let core = unsafe { self.inner.as_ref() };
+        let core = self.core();
         let old_ptr = core.swap(value);
-
         core.retired.lock().unwrap().push_back(RetiredPtr::new(old_ptr));
     }
 
@@ -261,25 +231,19 @@ impl<T> HzrdCell<T> {
     ///
     /// This method may block
     pub fn reclaim(&self) {
-        // SAFETY: Only shared references to this are allowed
-        let core = unsafe { self.inner.as_ref() };
-        core.reclaim();
+        self.core().reclaim();
     }
 
     /// Try to reclaim memory, but don't wait for the shared lock to do so
     pub fn try_reclaim(&self) {
-        // SAFETY: Only shared references to this are allowed
-        let core = unsafe { self.inner.as_ref() };
-        core.try_reclaim();
+        self.core().try_reclaim();
     }
 
     /// Get the number of retired values (aka unfreed memory)
     ///
     /// This method may block
     pub fn num_retired(&self) -> usize {
-        // SAFETY: Only shared references to this are allowed
-        let core = unsafe { self.inner.as_ref() };
-        core.retired.lock().unwrap().len()
+        self.core().retired.lock().unwrap().len()
     }
 }
 
@@ -341,25 +305,22 @@ impl<T> Drop for HzrdCell<T> {
     }
 }
 
-pub struct ReadHandle<'cell, T> {
-    reference: &'cell T,
-    hzrd_ptr: NonNull<HzrdPtr<T>>,
+pub struct ReadHandle<'hzrd, T> {
+    value: &'hzrd T,
+    hzrd_ptr: &'hzrd HzrdPtr<T>,
 }
 
 impl<T> Deref for ReadHandle<'_, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
-        self.reference
+        self.value
     }
 }
 
 impl<T> Drop for ReadHandle<'_, T> {
     fn drop(&mut self) {
-        // SAFETY:
-        // - Only shared references are valid
-        // - Pointer is held alive by lifetime 'cell
-        let hzrd_ptr = unsafe { self.hzrd_ptr.as_ref() };
-        hzrd_ptr.clear();
+        // SAFETY: We are dropping so `value` will never be accessed after this
+        unsafe { self.hzrd_ptr.clear() };
     }
 }
 

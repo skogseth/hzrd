@@ -26,11 +26,11 @@ impl<T> HzrdPtr<T> {
         self.0.load(Ordering::SeqCst)
     }
 
-    pub fn store(&self, ptr: *mut T) {
+    pub unsafe fn store(&self, ptr: *mut T) {
         self.0.store(ptr, Ordering::SeqCst);
     }
 
-    pub fn clear(&self) {
+    pub unsafe fn clear(&self) {
         self.0.store(null_mut(), Ordering::SeqCst);
     }
 }

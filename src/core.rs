@@ -2,6 +2,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
 
+use crate::ReadHandle;
 use crate::linked_list::{LinkedList, Node};
 use crate::utils::{HzrdPtr, RetiredPtr};
 
@@ -34,12 +35,27 @@ impl<T> HzrdCellInner<T> {
         (core, node_ptr)
     }
 
-    pub fn add(&self) -> NonNull<Node<HzrdPtr<T>>> {
-        let mut guard = self.hzrd_ptrs.lock().unwrap();
-        let hzrd_ptr = HzrdPtr::new();
-        guard.push_back(hzrd_ptr);
-        // SAFETY: There must be a tail node at this point
-        unsafe { guard.tail_node().unwrap_unchecked() }
+    /// Reads the contained value and keeps it valid through the hazard pointer
+    /// SAFETY: 
+    /// - Can only be called by the owner of the hazard pointer
+    /// - The owner cannot call this again until the [`ReadHandle`] has been dropped
+    pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr<T>) -> ReadHandle<'hzrd, T> {
+        let mut ptr = self.value.load(Ordering::SeqCst);
+        hzrd_ptr.store(ptr);
+
+        // We now need to keep updating it until it is in a consistent state
+        loop {
+            ptr = self.value.load(Ordering::SeqCst);
+            if std::ptr::eq(ptr, hzrd_ptr.get()) {
+                break;
+            } else {
+                hzrd_ptr.store(ptr);
+            }
+        }
+
+        // SAFETY: This pointer is now held valid by the hazard pointer
+        let value = &*ptr;
+        ReadHandle { value, hzrd_ptr }
     }
 
     pub fn swap(&self, value: T) -> NonNull<T> {
@@ -48,6 +64,14 @@ impl<T> HzrdCellInner<T> {
         // SAFETY: Ptr must at this point be non-null
         let old_raw_ptr = self.value.swap(new_ptr, Ordering::SeqCst);
         unsafe { NonNull::new_unchecked(old_raw_ptr) }
+    }
+
+    pub fn add(&self) -> NonNull<Node<HzrdPtr<T>>> {
+        let mut guard = self.hzrd_ptrs.lock().unwrap();
+        let hzrd_ptr = HzrdPtr::new();
+        guard.push_back(hzrd_ptr);
+        // SAFETY: There must be a tail node at this point
+        unsafe { guard.tail_node().unwrap_unchecked() }
     }
 
     /// Reclaim available memory
