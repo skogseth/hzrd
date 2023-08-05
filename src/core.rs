@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use crate::linked_list::{LinkedList, Node};
 use crate::utils::{HzrdPtr, RetiredPtr};
-use crate::ReadHandle;
+use crate::RefHandle;
 
 /// Shared heap allocated object for `HzrdCell`
 ///
@@ -39,7 +39,7 @@ impl<T> HzrdCellInner<T> {
     /// SAFETY:
     /// - Can only be called by the owner of the hazard pointer
     /// - The owner cannot call this again until the [`ReadHandle`] has been dropped
-    pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr<T>) -> ReadHandle<'hzrd, T> {
+    pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr<T>) -> RefHandle<'hzrd, T> {
         let mut ptr = self.value.load(Ordering::SeqCst);
         hzrd_ptr.store(ptr);
 
@@ -55,7 +55,7 @@ impl<T> HzrdCellInner<T> {
 
         // SAFETY: This pointer is now held valid by the hazard pointer
         let value = &*ptr;
-        ReadHandle { value, hzrd_ptr }
+        RefHandle { value, hzrd_ptr }
     }
 
     pub fn swap(&self, value: T) -> NonNull<T> {
