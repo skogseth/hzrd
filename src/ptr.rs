@@ -26,7 +26,7 @@ impl HzrdPtr {
 
     pub fn try_take(&self) -> Option<&Self> {
         match self.0.compare_exchange(0, dummy_addr(), SeqCst, SeqCst) {
-            Ok(_) => Some(&self),
+            Ok(_) => Some(self),
             Err(_) => None,
         }
     }

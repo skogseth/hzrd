@@ -90,12 +90,12 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ptr::NonNull;
 
-mod core;
+mod cell;
 mod linked_list;
 mod ptr;
 mod utils;
 
-use crate::core::HzrdCellInner;
+use crate::cell::HzrdCellInner;
 use crate::ptr::HzrdPtr;
 use crate::utils::RetiredPtr;
 use crate::utils::{allocate, free};
@@ -167,7 +167,7 @@ impl<T> HzrdCell<T> {
             return;
         };
 
-        core::reclaim(&mut retired, &hzrd_ptrs);
+        crate::utils::reclaim(&mut retired, &hzrd_ptrs);
     }
 
     /// Replace the contained value with a new value, returning the old
@@ -305,7 +305,8 @@ impl<T> HzrdCell<T> {
     pub fn just_set(&self, value: T) {
         let inner = self.inner();
         let old_ptr = inner.swap(value);
-        inner.retired
+        inner
+            .retired
             .lock()
             .unwrap()
             .push_back(RetiredPtr::new(old_ptr));

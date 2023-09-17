@@ -78,7 +78,7 @@ impl<T> HzrdCellInner<T> {
         // Wait for access to the hazard pointers
         let hzrd_ptrs = self.hzrd_ptrs.lock().unwrap();
 
-        reclaim(&mut retired, &hzrd_ptrs);
+        crate::utils::reclaim(&mut retired, &hzrd_ptrs);
     }
 
     /// Try to reclaim memory, but don't wait for the shared lock to do so
@@ -99,7 +99,7 @@ impl<T> HzrdCellInner<T> {
             return;
         };
 
-        reclaim(&mut retired, &hzrd_ptrs);
+        crate::utils::reclaim(&mut retired, &hzrd_ptrs);
     }
 }
 
@@ -108,16 +108,4 @@ impl<T> Drop for HzrdCellInner<T> {
         // SAFETY: No more references can be held if this is being dropped
         let _ = unsafe { Box::from_raw(self.value.load(Ordering::SeqCst)) };
     }
-}
-
-pub fn reclaim<T>(retired_ptrs: &mut LinkedList<RetiredPtr<T>>, hzrd_ptrs: &HzrdPtrs) {
-    let mut still_active = LinkedList::new();
-    'outer: while let Some(retired_ptr) = retired_ptrs.pop_front() {
-        if hzrd_ptrs.contains(retired_ptr.as_ptr() as usize) {
-            still_active.push_back(retired_ptr);
-            continue 'outer;
-        }
-    }
-
-    *retired_ptrs = still_active;
 }
