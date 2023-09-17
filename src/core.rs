@@ -2,8 +2,9 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Mutex;
 
-use crate::linked_list::{LinkedList, Node};
-use crate::utils::{HzrdPtr, RetiredPtr};
+use crate::linked_list::LinkedList;
+use crate::ptr::{HzrdPtr, HzrdPtrs};
+use crate::utils::RetiredPtr;
 use crate::RefHandle;
 
 /// Shared heap allocated object for `HzrdCell`
@@ -13,26 +14,24 @@ use crate::RefHandle;
 /// of the number of active `HzrdCell`s (akin to a very inefficent atomic counter).
 pub struct HzrdCellInner<T> {
     pub value: AtomicPtr<T>,
-    pub hzrd_ptrs: Mutex<LinkedList<HzrdPtr>>,
+    pub hzrd_ptrs: Mutex<HzrdPtrs>,
     pub retired: Mutex<LinkedList<RetiredPtr<T>>>,
 }
 
 impl<T> HzrdCellInner<T> {
-    pub fn new(boxed: Box<T>) -> (Self, NonNull<Node<HzrdPtr>>) {
-        let hzrd_ptr = HzrdPtr::new();
+    pub fn new(boxed: Box<T>) -> (Self, NonNull<HzrdPtr>) {
         let ptr = Box::into_raw(boxed);
 
-        let list = LinkedList::single(hzrd_ptr);
-        // SAFETY: There must be a head node at this point
-        let node_ptr = unsafe { list.head_node().unwrap_unchecked() };
+        let mut hzrd_ptrs = HzrdPtrs::new();
+        let hzrd_ptr = hzrd_ptrs.get();
 
         let core = Self {
             value: AtomicPtr::new(ptr),
-            hzrd_ptrs: Mutex::new(list),
+            hzrd_ptrs: Mutex::new(hzrd_ptrs),
             retired: Mutex::new(LinkedList::new()),
         };
 
-        (core, node_ptr)
+        (core, hzrd_ptr)
     }
 
     /// Reads the contained value and keeps it valid through the hazard pointer
@@ -66,12 +65,8 @@ impl<T> HzrdCellInner<T> {
         unsafe { NonNull::new_unchecked(old_raw_ptr) }
     }
 
-    pub fn add(&self) -> NonNull<Node<HzrdPtr>> {
-        let mut guard = self.hzrd_ptrs.lock().unwrap();
-        let hzrd_ptr = HzrdPtr::new();
-        guard.push_back(hzrd_ptr);
-        // SAFETY: There must be a tail node at this point
-        unsafe { guard.tail_node().unwrap_unchecked() }
+    pub fn add(&self) -> NonNull<HzrdPtr> {
+        self.hzrd_ptrs.lock().unwrap().get()
     }
 
     /// Reclaim available memory
@@ -122,14 +117,12 @@ impl<T> Drop for HzrdCellInner<T> {
     }
 }
 
-pub fn reclaim<T>(retired_ptrs: &mut LinkedList<RetiredPtr<T>>, hzrd_ptrs: &LinkedList<HzrdPtr>) {
+pub fn reclaim<T>(retired_ptrs: &mut LinkedList<RetiredPtr<T>>, hzrd_ptrs: &HzrdPtrs) {
     let mut still_active = LinkedList::new();
     'outer: while let Some(retired_ptr) = retired_ptrs.pop_front() {
-        for hzrd_ptr in hzrd_ptrs.iter() {
-            if retired_ptr.as_ptr() as usize == hzrd_ptr.get() {
-                still_active.push_back(retired_ptr);
-                continue 'outer;
-            }
+        if hzrd_ptrs.contains(retired_ptr.as_ptr() as usize) {
+            still_active.push_back(retired_ptr);
+            continue 'outer;
         }
     }
 

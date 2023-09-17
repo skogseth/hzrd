@@ -92,12 +92,13 @@ use std::ptr::NonNull;
 
 mod core;
 mod linked_list;
+mod ptr;
 mod utils;
 
 use crate::core::HzrdCellInner;
-use crate::linked_list::Node;
+use crate::ptr::HzrdPtr;
+use crate::utils::RetiredPtr;
 use crate::utils::{allocate, free};
-use crate::utils::{HzrdPtr, RetiredPtr};
 
 /**
 Holds a value that can be shared, and mutated, across multiple threads
@@ -106,7 +107,7 @@ See the [crate-level documentation](crate) for more details.
 */
 pub struct HzrdCell<T> {
     inner: NonNull<HzrdCellInner<T>>,
-    node_ptr: NonNull<Node<HzrdPtr>>,
+    hzrd_ptr: NonNull<HzrdPtr>,
     marker: PhantomData<T>,
 }
 
@@ -119,7 +120,7 @@ impl<T> HzrdCell<T> {
 
     fn hzrd_ptr(&self) -> &HzrdPtr {
         // SAFETY: This pointer is valid for as long as this cell is
-        unsafe { &*Node::get_from_ptr(self.node_ptr) }
+        unsafe { self.hzrd_ptr.as_ref() }
     }
 }
 
@@ -334,11 +335,11 @@ unsafe impl<T: Send> Send for HzrdCell<T> {}
 
 impl<T> Clone for HzrdCell<T> {
     fn clone(&self) -> Self {
-        let node_ptr = self.core().add();
+        let hzrd_ptr = self.core().add();
 
         HzrdCell {
             inner: self.inner,
-            node_ptr,
+            hzrd_ptr,
             marker: PhantomData,
         }
     }
@@ -352,10 +353,10 @@ impl<T: Display> Display for HzrdCell<T> {
 
 impl<T> From<Box<T>> for HzrdCell<T> {
     fn from(boxed: Box<T>) -> Self {
-        let (core, node_ptr) = HzrdCellInner::new(boxed);
+        let (core, hzrd_ptr) = HzrdCellInner::new(boxed);
         HzrdCell {
             inner: allocate(core),
-            node_ptr,
+            hzrd_ptr,
             marker: PhantomData,
         }
     }
@@ -365,15 +366,12 @@ impl<T> Drop for HzrdCell<T> {
     fn drop(&mut self) {
         // SAFETY: We scope this so that all references/pointers are dropped before inner is dropped
         let should_drop_inner = {
-            let core = self.core();
+            // SAFETY: The HzrdPtr is exclusively owned by the current cell
+            unsafe { self.hzrd_ptr().free() };
 
             // TODO: Handle panic?
-            let mut hzrd_ptrs = core.hzrd_ptrs.lock().unwrap();
-
-            // SAFETY: The node is exclusively owned by the current cell
-            let _ = unsafe { hzrd_ptrs.remove_node(self.node_ptr) };
-
-            hzrd_ptrs.is_empty()
+            let hzrd_ptrs = self.core().hzrd_ptrs.lock().unwrap();
+            hzrd_ptrs.all_available()
         };
 
         if should_drop_inner {
