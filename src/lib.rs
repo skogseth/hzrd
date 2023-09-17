@@ -113,7 +113,7 @@ pub struct HzrdCell<T> {
 
 // Private methods
 impl<T> HzrdCell<T> {
-    fn core(&self) -> &HzrdCellInner<T> {
+    fn inner(&self) -> &HzrdCellInner<T> {
         // SAFETY: Only shared references to this are allowed
         unsafe { self.inner.as_ref() }
     }
@@ -157,13 +157,13 @@ impl<T> HzrdCell<T> {
     ```
     */
     pub fn set(&self, value: T) {
-        let core = self.core();
-        let old_ptr = core.swap(value);
+        let inner = self.inner();
+        let old_ptr = inner.swap(value);
 
-        let mut retired = core.retired.lock().unwrap();
+        let mut retired = inner.retired.lock().unwrap();
         retired.push_back(RetiredPtr::new(old_ptr));
 
-        let Ok(hzrd_ptrs) = core.hzrd_ptrs.try_lock() else {
+        let Ok(hzrd_ptrs) = inner.hzrd_ptrs.try_lock() else {
             return;
         };
 
@@ -193,13 +193,13 @@ impl<T> HzrdCell<T> {
     where
         T: Copy,
     {
-        let core = self.core();
+        let inner = self.inner();
         let hzrd_ptr = self.hzrd_ptr();
 
         // SAFETY:
         // - We are the owner of the hazard pointer
         // - Value is immediately copied, and ReadHandle is dropped
-        unsafe { *core.read(hzrd_ptr) }
+        unsafe { *inner.read(hzrd_ptr) }
     }
 
     /**
@@ -233,14 +233,14 @@ impl<T> HzrdCell<T> {
     ```
     */
     pub fn read(cell: &mut Self) -> RefHandle<'_, T> {
-        let core = cell.core();
+        let inner = cell.inner();
         let hzrd_ptr = cell.hzrd_ptr();
 
         // SAFETY:
         // - We are the owner of the hazard pointer
         // - ReadHandle holds exlusive reference via &mut, meaning
         //   no other accesses to hazard pointer before it is dropped
-        unsafe { core.read(hzrd_ptr) }
+        unsafe { inner.read(hzrd_ptr) }
     }
 
     /**
@@ -257,13 +257,13 @@ impl<T> HzrdCell<T> {
     where
         T: Clone,
     {
-        let core = self.core();
+        let inner = self.inner();
         let hzrd_ptr = self.hzrd_ptr();
 
         // SAFETY:
         // - We are the owner of the hazard pointer
         // - Value is immediately cloned, and RefHandle is dropped
-        unsafe { core.read(hzrd_ptr).clone() }
+        unsafe { inner.read(hzrd_ptr).clone() }
     }
 
     /**
@@ -288,13 +288,13 @@ impl<T> HzrdCell<T> {
     ```
     */
     pub fn read_and_map<U, F: FnOnce(&T) -> U>(&self, f: F) -> U {
-        let core = self.core();
+        let inner = self.inner();
         let hzrd_ptr = self.hzrd_ptr();
 
         // SAFETY:
         // - We are the owner of the hazard pointer
         // - We don't access the hazard pointer for the rest of the function
-        let value = unsafe { core.read(hzrd_ptr) };
+        let value = unsafe { inner.read(hzrd_ptr) };
 
         f(&value)
     }
@@ -303,9 +303,9 @@ impl<T> HzrdCell<T> {
     ///
     /// This method may block after the value has been set.
     pub fn just_set(&self, value: T) {
-        let core = self.core();
-        let old_ptr = core.swap(value);
-        core.retired
+        let inner = self.inner();
+        let old_ptr = inner.swap(value);
+        inner.retired
             .lock()
             .unwrap()
             .push_back(RetiredPtr::new(old_ptr));
@@ -315,19 +315,19 @@ impl<T> HzrdCell<T> {
     ///
     /// This method may block
     pub fn reclaim(&self) {
-        self.core().reclaim();
+        self.inner().reclaim();
     }
 
     /// Try to reclaim memory, but don't wait for the shared lock to do so
     pub fn try_reclaim(&self) {
-        self.core().try_reclaim();
+        self.inner().try_reclaim();
     }
 
     /// Get the number of retired values (aka unfreed memory)
     ///
     /// This method may block
     pub fn num_retired(&self) -> usize {
-        self.core().retired.lock().unwrap().len()
+        self.inner().retired.lock().unwrap().len()
     }
 }
 
@@ -335,7 +335,7 @@ unsafe impl<T: Send> Send for HzrdCell<T> {}
 
 impl<T> Clone for HzrdCell<T> {
     fn clone(&self) -> Self {
-        let hzrd_ptr = self.core().add();
+        let hzrd_ptr = self.inner().add();
 
         HzrdCell {
             inner: self.inner,
@@ -353,9 +353,11 @@ impl<T: Display> Display for HzrdCell<T> {
 
 impl<T> From<Box<T>> for HzrdCell<T> {
     fn from(boxed: Box<T>) -> Self {
-        let (core, hzrd_ptr) = HzrdCellInner::new(boxed);
+        let inner = HzrdCellInner::new(boxed);
+        let hzrd_ptr = inner.add();
+
         HzrdCell {
-            inner: allocate(core),
+            inner: allocate(inner),
             hzrd_ptr,
             marker: PhantomData,
         }
@@ -370,7 +372,7 @@ impl<T> Drop for HzrdCell<T> {
             unsafe { self.hzrd_ptr().free() };
 
             // TODO: Handle panic?
-            let hzrd_ptrs = self.core().hzrd_ptrs.lock().unwrap();
+            let hzrd_ptrs = self.inner().hzrd_ptrs.lock().unwrap();
             hzrd_ptrs.all_available()
         };
 

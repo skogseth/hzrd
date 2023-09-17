@@ -19,19 +19,12 @@ pub struct HzrdCellInner<T> {
 }
 
 impl<T> HzrdCellInner<T> {
-    pub fn new(boxed: Box<T>) -> (Self, NonNull<HzrdPtr>) {
-        let ptr = Box::into_raw(boxed);
-
-        let mut hzrd_ptrs = HzrdPtrs::new();
-        let hzrd_ptr = hzrd_ptrs.get();
-
-        let core = Self {
-            value: AtomicPtr::new(ptr),
-            hzrd_ptrs: Mutex::new(hzrd_ptrs),
+    pub fn new(boxed: Box<T>) -> Self {
+        Self {
+            value: AtomicPtr::new(Box::into_raw(boxed)),
+            hzrd_ptrs: Mutex::new(HzrdPtrs::new()),
             retired: Mutex::new(LinkedList::new()),
-        };
-
-        (core, hzrd_ptr)
+        }
     }
 
     /// Reads the contained value and keeps it valid through the hazard pointer
