@@ -122,10 +122,7 @@ impl<T> Drop for HzrdCellInner<T> {
     }
 }
 
-pub fn reclaim<T>(
-    retired_ptrs: &mut LinkedList<RetiredPtr<T>>,
-    hzrd_ptrs: &LinkedList<HzrdPtr>,
-) {
+pub fn reclaim<T>(retired_ptrs: &mut LinkedList<RetiredPtr<T>>, hzrd_ptrs: &LinkedList<HzrdPtr>) {
     let mut still_active = LinkedList::new();
     'outer: while let Some(retired_ptr) = retired_ptrs.pop_front() {
         for hzrd_ptr in hzrd_ptrs.iter() {
