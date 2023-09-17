@@ -106,7 +106,7 @@ See the [crate-level documentation](crate) for more details.
 */
 pub struct HzrdCell<T> {
     inner: NonNull<HzrdCellInner<T>>,
-    node_ptr: NonNull<Node<HzrdPtr<T>>>,
+    node_ptr: NonNull<Node<HzrdPtr>>,
     marker: PhantomData<T>,
 }
 
@@ -117,7 +117,7 @@ impl<T> HzrdCell<T> {
         unsafe { self.inner.as_ref() }
     }
 
-    fn hzrd_ptr(&self) -> &HzrdPtr<T> {
+    fn hzrd_ptr(&self) -> &HzrdPtr {
         // SAFETY: This pointer is valid for as long as this cell is
         unsafe { &*Node::get_from_ptr(self.node_ptr) }
     }
@@ -388,7 +388,7 @@ impl<T> Drop for HzrdCell<T> {
 /// Holds a reference to an object protected by a hazard pointer
 pub struct RefHandle<'hzrd, T> {
     value: &'hzrd T,
-    hzrd_ptr: &'hzrd HzrdPtr<T>,
+    hzrd_ptr: &'hzrd HzrdPtr,
 }
 
 impl<T> Deref for RefHandle<'_, T> {

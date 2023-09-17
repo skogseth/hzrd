@@ -1,5 +1,5 @@
-use std::ptr::{null_mut, NonNull};
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::ptr::NonNull;
+use std::sync::atomic::{Ordering, AtomicUsize};
 
 /// Place object on the heap (will leak)
 pub fn allocate<T>(object: T) -> NonNull<T> {
@@ -15,23 +15,45 @@ pub unsafe fn free<T>(non_null_ptr: NonNull<T>) {
 }
 
 /// Holds some address that is currently used (may be null)
-pub struct HzrdPtr<T>(AtomicPtr<T>);
+pub struct HzrdPtr(AtomicUsize);
 
-impl<T> HzrdPtr<T> {
+pub enum HzrdPtrState {
+    Active(usize),
+    Inactive,
+    Free,
+}
+
+impl HzrdPtr {
     pub fn new() -> Self {
-        HzrdPtr(AtomicPtr::new(null_mut()))
+        HzrdPtr(AtomicUsize::new(0)) 
     }
 
-    pub fn get(&self) -> *mut T {
+    pub fn get(&self) -> usize {
         self.0.load(Ordering::SeqCst)
     }
 
-    pub unsafe fn store(&self, ptr: *mut T) {
-        self.0.store(ptr, Ordering::SeqCst);
+    pub fn state(&self) -> HzrdPtrState {
+        let val = self.0.load(Ordering::SeqCst);
+        if val == 0 {
+            HzrdPtrState::Inactive
+        } else if val == std::ptr::addr_of!(self) as usize {
+            HzrdPtrState::Free
+        } else {
+            HzrdPtrState::Active(val)
+        }
+    }
+
+    pub unsafe fn store<T>(&self, ptr: *mut T) {
+        self.0.store(ptr as usize, Ordering::SeqCst);
     }
 
     pub unsafe fn clear(&self) {
-        self.0.store(null_mut(), Ordering::SeqCst);
+        self.0.store(0, Ordering::SeqCst);
+    }
+
+    pub unsafe fn free(&self) {
+        let self_ptr = std::ptr::addr_of!(self) as usize;
+        self.0.store(self_ptr, Ordering::SeqCst);
     }
 }
 
@@ -51,5 +73,22 @@ impl<T> Drop for RetiredPtr<T> {
     fn drop(&mut self) {
         // SAFETY: No reference to this when dropped
         unsafe { free(self.0) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hzrd_ptr() {
+        let mut value = String::from("Danger!");
+        let hzrd_ptr = HzrdPtr::new();
+        unsafe { hzrd_ptr.store(&mut value) };
+        unsafe { hzrd_ptr.clear() };
+        unsafe { hzrd_ptr.store(&mut value) };
+
+        unsafe { hzrd_ptr.free() };
+        unsafe { hzrd_ptr.store(&mut value) };
     }
 }

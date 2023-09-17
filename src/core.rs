@@ -13,12 +13,12 @@ use crate::RefHandle;
 /// of the number of active `HzrdCell`s (akin to a very inefficent atomic counter).
 pub struct HzrdCellInner<T> {
     pub value: AtomicPtr<T>,
-    pub hzrd_ptrs: Mutex<LinkedList<HzrdPtr<T>>>,
+    pub hzrd_ptrs: Mutex<LinkedList<HzrdPtr>>,
     pub retired: Mutex<LinkedList<RetiredPtr<T>>>,
 }
 
 impl<T> HzrdCellInner<T> {
-    pub fn new(boxed: Box<T>) -> (Self, NonNull<Node<HzrdPtr<T>>>) {
+    pub fn new(boxed: Box<T>) -> (Self, NonNull<Node<HzrdPtr>>) {
         let hzrd_ptr = HzrdPtr::new();
         let ptr = Box::into_raw(boxed);
 
@@ -39,14 +39,14 @@ impl<T> HzrdCellInner<T> {
     /// SAFETY:
     /// - Can only be called by the owner of the hazard pointer
     /// - The owner cannot call this again until the [`ReadHandle`] has been dropped
-    pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr<T>) -> RefHandle<'hzrd, T> {
+    pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr) -> RefHandle<'hzrd, T> {
         let mut ptr = self.value.load(Ordering::SeqCst);
         hzrd_ptr.store(ptr);
 
         // We now need to keep updating it until it is in a consistent state
         loop {
             ptr = self.value.load(Ordering::SeqCst);
-            if std::ptr::eq(ptr, hzrd_ptr.get()) {
+            if ptr as usize == hzrd_ptr.get() {
                 break;
             } else {
                 hzrd_ptr.store(ptr);
@@ -66,7 +66,7 @@ impl<T> HzrdCellInner<T> {
         unsafe { NonNull::new_unchecked(old_raw_ptr) }
     }
 
-    pub fn add(&self) -> NonNull<Node<HzrdPtr<T>>> {
+    pub fn add(&self) -> NonNull<Node<HzrdPtr>> {
         let mut guard = self.hzrd_ptrs.lock().unwrap();
         let hzrd_ptr = HzrdPtr::new();
         guard.push_back(hzrd_ptr);
@@ -124,12 +124,12 @@ impl<T> Drop for HzrdCellInner<T> {
 
 pub fn reclaim<T>(
     retired_ptrs: &mut LinkedList<RetiredPtr<T>>,
-    hzrd_ptrs: &LinkedList<HzrdPtr<T>>,
+    hzrd_ptrs: &LinkedList<HzrdPtr>,
 ) {
     let mut still_active = LinkedList::new();
     'outer: while let Some(retired_ptr) = retired_ptrs.pop_front() {
         for hzrd_ptr in hzrd_ptrs.iter() {
-            if std::ptr::eq(retired_ptr.as_ptr(), hzrd_ptr.get()) {
+            if retired_ptr.as_ptr() as usize == hzrd_ptr.get() {
                 still_active.push_back(retired_ptr);
                 continue 'outer;
             }
