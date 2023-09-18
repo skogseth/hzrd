@@ -91,6 +91,7 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 
 mod cell;
+mod core;
 mod linked_list;
 mod ptr;
 mod utils;
@@ -158,7 +159,7 @@ impl<T> HzrdCell<T> {
     */
     pub fn set(&self, value: T) {
         let inner = self.inner();
-        let old_ptr = inner.swap(value);
+        let old_ptr = inner.core.swap(value);
 
         let mut retired = inner.retired.lock().unwrap();
         retired.push_back(RetiredPtr::new(old_ptr));
@@ -199,7 +200,7 @@ impl<T> HzrdCell<T> {
         // SAFETY:
         // - We are the owner of the hazard pointer
         // - Value is immediately copied, and ReadHandle is dropped
-        unsafe { *inner.read(hzrd_ptr) }
+        unsafe { *inner.core.read(hzrd_ptr) }
     }
 
     /**
@@ -240,7 +241,7 @@ impl<T> HzrdCell<T> {
         // - We are the owner of the hazard pointer
         // - ReadHandle holds exlusive reference via &mut, meaning
         //   no other accesses to hazard pointer before it is dropped
-        unsafe { inner.read(hzrd_ptr) }
+        unsafe { inner.core.read(hzrd_ptr) }
     }
 
     /**
@@ -263,7 +264,7 @@ impl<T> HzrdCell<T> {
         // SAFETY:
         // - We are the owner of the hazard pointer
         // - Value is immediately cloned, and RefHandle is dropped
-        unsafe { inner.read(hzrd_ptr).clone() }
+        unsafe { inner.core.read(hzrd_ptr).clone() }
     }
 
     /**
@@ -294,7 +295,7 @@ impl<T> HzrdCell<T> {
         // SAFETY:
         // - We are the owner of the hazard pointer
         // - We don't access the hazard pointer for the rest of the function
-        let value = unsafe { inner.read(hzrd_ptr) };
+        let value = unsafe { inner.core.read(hzrd_ptr) };
 
         f(&value)
     }
@@ -304,7 +305,7 @@ impl<T> HzrdCell<T> {
     /// This method may block after the value has been set.
     pub fn just_set(&self, value: T) {
         let inner = self.inner();
-        let old_ptr = inner.swap(value);
+        let old_ptr = inner.core.swap(value);
         inner
             .retired
             .lock()
