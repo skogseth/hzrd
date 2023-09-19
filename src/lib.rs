@@ -93,12 +93,15 @@ use std::ptr::NonNull;
 mod cell;
 mod core;
 mod linked_list;
+mod pair;
 mod utils;
 
 use crate::cell::HzrdCellInner;
 use crate::core::HzrdPtr;
 use crate::utils::RetiredPtr;
 use crate::utils::{allocate, free};
+
+pub use crate::pair::{HzrdReader, HzrdWriter};
 
 /**
 Holds a value that can be shared, and mutated, across multiple threads
@@ -238,7 +241,7 @@ impl<T> HzrdCell<T> {
 
         // SAFETY:
         // - We are the owner of the hazard pointer
-        // - ReadHandle holds exlusive reference via &mut, meaning
+        // - RefHandle holds exlusive reference via &mut, meaning
         //   no other accesses to hazard pointer before it is dropped
         unsafe { inner.core.read(hzrd_ptr) }
     }
