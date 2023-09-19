@@ -93,11 +93,10 @@ use std::ptr::NonNull;
 mod cell;
 mod core;
 mod linked_list;
-mod ptr;
 mod utils;
 
 use crate::cell::HzrdCellInner;
-use crate::ptr::HzrdPtr;
+use crate::core::HzrdPtr;
 use crate::utils::RetiredPtr;
 use crate::utils::{allocate, free};
 

@@ -1,9 +1,8 @@
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
-use crate::core::HzrdCore;
+use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs};
 use crate::linked_list::LinkedList;
-use crate::ptr::{HzrdPtr, HzrdPtrs};
 use crate::utils::RetiredPtr;
 
 /// Shared heap allocated object for `HzrdCell`

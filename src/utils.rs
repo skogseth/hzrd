@@ -1,7 +1,7 @@
 use std::ptr::NonNull;
 
+use crate::core::HzrdPtrs;
 use crate::linked_list::LinkedList;
-use crate::ptr::HzrdPtrs;
 
 /// Place object on the heap (will leak)
 pub fn allocate<T>(object: T) -> NonNull<T> {
