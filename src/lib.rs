@@ -88,9 +88,8 @@ There is no way to acquire a mutable borrow to the underlying value as that inhe
 mod cell;
 mod core;
 mod linked_list;
-mod pair;
+pub mod pair;
 mod utils;
 
 pub use crate::cell::HzrdCell;
 pub use crate::core::RefHandle;
-pub use crate::pair::{HzrdReader, HzrdWriter};

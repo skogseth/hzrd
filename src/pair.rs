@@ -1,3 +1,29 @@
+/*!
+This module contains the [`HzrdWriter`]/[`HzrdReader`] pair.
+
+This pair is the most primitive constructs found in this crate, as they contain no locking for synchronization. A consequence of this is that there is no garbage collection of the containers themselves. [`HzrdReader`] therefore holds a reference to it's [`HzrdWriter`], and is only valid for the lifetime of [`HzrdWriter`]. This makes the
+[`HzrdWriter`]/[`HzrdReader`] pair impractical in many situations. But! They are very good where they shine! In particular, they work excellently together with scoped threads:
+
+```
+# use std::time::Duration;
+# use hzrd::pair::HzrdWriter;
+
+let writer = HzrdWriter::new(0);
+
+std::thread::scope(|s| {
+    let reader = writer.reader();
+    s.spawn(move || {
+        while reader.get() == 0 {
+            std::hint::spin_loop();
+        }
+    });
+
+    std::thread::sleep(Duration::from_millis(10));
+    writer.set(1);
+});
+```
+*/
+
 use std::ptr::NonNull;
 
 use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs};
@@ -5,11 +31,21 @@ use crate::linked_list::LinkedList;
 use crate::utils::RetiredPtr;
 use crate::RefHandle;
 
+/**
+Container type with the ability to write to the contained value
+
+For in-depth guide see the [module-level documentation](crate::pair).
+*/
 pub struct HzrdWriter<T> {
     core: Box<HzrdCore<T>>,
     ptrs: NonNull<Ptrs<T>>,
 }
 
+/**
+Container type with the ability to read the contained value.
+
+For in-depth guide see the [module-level documentation](crate::pair).
+*/
 pub struct HzrdReader<'writer, T> {
     core: &'writer HzrdCore<T>,
     hzrd_ptr: NonNull<HzrdPtr>,
@@ -21,10 +57,35 @@ struct Ptrs<T> {
 }
 
 impl<T> HzrdWriter<T> {
+    /**
+    Construct a new [`HzrdWriter`] containing the given value.
+    The value will be allocated on the heap seperate of the metadata associated with the [`HzrdWriter`].
+    It is therefore recommended to use [`HzrdWriter::from`] if you already have a [`Box<T>`].
+
+    ```
+    # use hzrd::pair::HzrdWriter;
+    #
+    let writer = HzrdWriter::new(0);
+    #
+    # assert_eq!(writer.reader().get(), 0);
+    ```
+    */
     pub fn new(value: T) -> Self {
         Self::from(Box::new(value))
     }
 
+    /**
+    Construct a new [`HzrdReader`] for reading the value contained by the given [`HzrdWriter`]
+
+    ```
+    # use hzrd::pair::HzrdWriter;
+    #
+    let writer = HzrdWriter::new(0);
+    let reader = writer.reader();
+    writer.set(1);
+    assert_eq!(reader.get(), 1);
+    ```
+    */
     pub fn reader(&self) -> HzrdReader<T> {
         // SAFETY:
         // - Only the writer can access this
