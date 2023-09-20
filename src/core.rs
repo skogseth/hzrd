@@ -1,8 +1,28 @@
+use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
 
 use crate::linked_list::LinkedList;
-use crate::RefHandle;
+
+/// Holds a reference to an object protected by a hazard pointer
+pub struct RefHandle<'hzrd, T> {
+    value: &'hzrd T,
+    hzrd_ptr: &'hzrd HzrdPtr,
+}
+
+impl<T> Deref for RefHandle<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        self.value
+    }
+}
+
+impl<T> Drop for RefHandle<'_, T> {
+    fn drop(&mut self) {
+        // SAFETY: We are dropping so `value` will never be accessed after this
+        unsafe { self.hzrd_ptr.clear() };
+    }
+}
 
 fn dummy_addr() -> usize {
     static DUMMY: u8 = 0;

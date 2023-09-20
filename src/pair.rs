@@ -92,7 +92,7 @@ impl<T> HzrdReader<'_, T> {
         let hzrd_ptr = self.hzrd_ptr();
         self.core.read(hzrd_ptr)
     }
-    
+
     pub fn read(reader: &mut Self) -> RefHandle<T> {
         // SAFETY:
         // - We are the owner of the hazard pointer
@@ -101,11 +101,11 @@ impl<T> HzrdReader<'_, T> {
         unsafe { reader.__read() }
     }
 
-    pub fn get(&self) -> T 
+    pub fn get(&self) -> T
     where
         T: Copy,
     {
-        // SAFETY: 
+        // SAFETY:
         // - Not `Sync`
         // - This is the only place the thread can be
         // - We immediately drop the RefHandle
@@ -147,7 +147,7 @@ mod tests {
         let boxed = Box::new([1, 2, 3]);
         let _ = HzrdWriter::from(boxed);
     }
-    
+
     #[test]
     fn fancy() {
         let writer = HzrdWriter::new(0);
