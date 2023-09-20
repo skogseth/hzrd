@@ -87,14 +87,29 @@ impl<T> HzrdReader<'_, T> {
 }
 
 impl<T> HzrdReader<'_, T> {
+    // SAFETY: Only one RefHandle at any given point
+    unsafe fn __read(&self) -> RefHandle<T> {
+        let hzrd_ptr = self.hzrd_ptr();
+        self.core.read(hzrd_ptr)
+    }
+    
     pub fn read(reader: &mut Self) -> RefHandle<T> {
-        let hzrd_ptr = reader.hzrd_ptr();
-
         // SAFETY:
         // - We are the owner of the hazard pointer
         // - RefHandle holds exlusive reference via &mut, meaning
         //   no other accesses to hazard pointer before it is dropped
-        unsafe { reader.core.read(hzrd_ptr) }
+        unsafe { reader.__read() }
+    }
+
+    pub fn get(&self) -> T 
+    where
+        T: Copy,
+    {
+        // SAFETY: 
+        // - Not `Sync`
+        // - This is the only place the thread can be
+        // - We immediately drop the RefHandle
+        unsafe { *self.__read() }
     }
 }
 
@@ -112,6 +127,27 @@ unsafe impl<T> Send for HzrdReader<'_, T> {}
 mod tests {
     use super::*;
 
+    #[test]
+    fn deep_drop_test() {
+        let _ = HzrdWriter::new(String::from("Hello"));
+    }
+
+    #[test]
+    fn writer_moved() {
+        let writer = HzrdWriter::new('a');
+
+        std::thread::spawn(move || {
+            let val: char = writer.reader().get();
+            assert_eq!(val, 'a');
+        });
+    }
+
+    #[test]
+    fn from_boxed() {
+        let boxed = Box::new([1, 2, 3]);
+        let _ = HzrdWriter::from(boxed);
+    }
+    
     #[test]
     fn fancy() {
         let writer = HzrdWriter::new(0);
