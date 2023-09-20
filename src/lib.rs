@@ -92,6 +92,7 @@ use std::ptr::NonNull;
 
 mod cell;
 mod core;
+mod gc;
 mod linked_list;
 mod pair;
 mod utils;
