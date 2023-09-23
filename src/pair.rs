@@ -8,18 +8,18 @@ This pair is the most primitive constructs found in this crate, as they contain 
 # use std::time::Duration;
 # use hzrd::pair::HzrdWriter;
 
-let writer = HzrdWriter::new(0);
+let ready_writer = HzrdWriter::new(false);
 
 std::thread::scope(|s| {
-    let reader = writer.reader();
+    let ready_reader = ready_writer.reader();
     s.spawn(move || {
-        while reader.get() == 0 {
+        while !ready_reader.get() {
             std::hint::spin_loop();
         }
     });
 
     std::thread::sleep(Duration::from_millis(10));
-    writer.set(1);
+    ready_writer.set(true);
 });
 ```
 */

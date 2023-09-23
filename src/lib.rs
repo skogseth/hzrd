@@ -1,7 +1,8 @@
 /*!
 This crate provides a safe API for shared mutability using hazard pointers for memory reclamation.
 
-The main entrypoint to this crate is the [`HzrdCell`], which provides an API similar to that of the standard library's [`Cell`](std::cell::Cell)-type. However, [`HzrdCell`] allows shared mutation across multiole threads.
+# [`HzrdCell`]
+The simplest entrypoint to this crate is the [`HzrdCell`], which provides an API similar to that of the standard library's [`Cell`](std::cell::Cell)-type. However, [`HzrdCell`] allows shared mutation across multiple threads.
 
 The main advantage of [`HzrdCell`], compared to something like a [`Mutex`](std::sync::Mutex), is that reading and writing to the value is lock-free. This is offset by an increased memory use, a significant overhead for creating/destroying cells, as well as some... funkiness. [`HzrdCell`] requires in contrast to the [`Mutex`](std::sync::Mutex) no additional wrapping, such as reference counting, in order to keep references valid for threads that may outlive eachother. There is an inherent reference count in the core functionality of [`HzrdCell`] which maintains this safety.
 
@@ -88,8 +89,9 @@ There is no way to acquire a mutable borrow to the underlying value as that inhe
 mod cell;
 mod core;
 mod linked_list;
-pub mod pair;
 mod utils;
+
+pub mod pair;
 
 pub use crate::cell::HzrdCell;
 pub use crate::core::RefHandle;
