@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
-use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs, RefHandle};
+use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs, Read, RefHandle};
 use crate::linked_list::LinkedList;
 use crate::utils::RetiredPtr;
 use crate::utils::{allocate, free};
@@ -29,6 +29,19 @@ impl<T> HzrdCell<T> {
     fn hzrd_ptr(&self) -> &HzrdPtr {
         // SAFETY: This pointer is valid for as long as this cell is
         unsafe { self.hzrd_ptr.as_ref() }
+    }
+}
+
+// SAFETY: `HzrdCell` is not `Sync`
+unsafe impl<T> crate::core::Read for HzrdCell<T> {
+    type T = T;
+
+    unsafe fn read_unchecked(&self) -> RefHandle<Self::T> {
+        let core = &self.inner().core;
+        let hzrd_ptr = self.hzrd_ptr();
+
+        // SAFETY: We are the owner of the hazard pointer
+        unsafe { HzrdCore::read(core, hzrd_ptr) }
     }
 }
 
@@ -78,38 +91,6 @@ impl<T> HzrdCell<T> {
         crate::utils::reclaim(&mut retired, &hzrd_ptrs);
     }
 
-    /// Replace the contained value with a new value, returning the old
-    ///
-    /// This will block until all [`ReadHandle`]s have been dropped
-    #[doc(hidden)]
-    pub fn replace(&self, value: T) -> T {
-        let _ = value;
-        todo!()
-    }
-
-    /**
-    Get the value of the cell (requires the type to be [`Copy`])
-
-    ```
-    # use hzrd::HzrdCell;
-    #
-    let cell = HzrdCell::new(100);
-    assert_eq!(cell.get(), 100);
-    ```
-    */
-    pub fn get(&self) -> T
-    where
-        T: Copy,
-    {
-        let inner = self.inner();
-        let hzrd_ptr = self.hzrd_ptr();
-
-        // SAFETY:
-        // - We are the owner of the hazard pointer
-        // - Value is immediately copied, and ReadHandle is dropped
-        unsafe { *inner.core.read(hzrd_ptr) }
-    }
-
     /**
     Get a handle to read the value held by the `HzrdCell`
 
@@ -140,15 +121,25 @@ impl<T> HzrdCell<T> {
     assert_eq!(bytes, [72, 101, 121]);
     ```
     */
-    pub fn read(cell: &mut Self) -> RefHandle<'_, T> {
-        let inner = cell.inner();
-        let hzrd_ptr = cell.hzrd_ptr();
+    pub fn read(&mut self) -> RefHandle<T> {
+        <Self as Read>::read(self)
+    }
 
-        // SAFETY:
-        // - We are the owner of the hazard pointer
-        // - RefHandle holds exlusive reference via &mut, meaning
-        //   no other accesses to hazard pointer before it is dropped
-        unsafe { inner.core.read(hzrd_ptr) }
+    /**
+    Get the value of the cell (requires the type to be [`Copy`])
+
+    ```
+    # use hzrd::HzrdCell;
+    #
+    let cell = HzrdCell::new(100);
+    assert_eq!(cell.get(), 100);
+    ```
+    */
+    pub fn get(&self) -> T
+    where
+        T: Copy,
+    {
+        <Self as Read>::get(self)
     }
 
     /**
@@ -165,13 +156,7 @@ impl<T> HzrdCell<T> {
     where
         T: Clone,
     {
-        let inner = self.inner();
-        let hzrd_ptr = self.hzrd_ptr();
-
-        // SAFETY:
-        // - We are the owner of the hazard pointer
-        // - Value is immediately cloned, and RefHandle is dropped
-        unsafe { inner.core.read(hzrd_ptr).clone() }
+        <Self as Read>::cloned(self)
     }
 
     /**
@@ -196,15 +181,16 @@ impl<T> HzrdCell<T> {
     ```
     */
     pub fn read_and_map<U, F: FnOnce(&T) -> U>(&self, f: F) -> U {
-        let inner = self.inner();
-        let hzrd_ptr = self.hzrd_ptr();
+        <Self as Read>::read_and_map(self, f)
+    }
 
-        // SAFETY:
-        // - We are the owner of the hazard pointer
-        // - We don't access the hazard pointer for the rest of the function
-        let value = unsafe { inner.core.read(hzrd_ptr) };
-
-        f(&value)
+    /// Replace the contained value with a new value, returning the old
+    ///
+    /// This will block until all [`ReadHandle`]s have been dropped
+    #[doc(hidden)]
+    pub fn replace(&self, value: T) -> T {
+        let _ = value;
+        todo!()
     }
 
     /// Set the value of the cell, without reclaiming memory

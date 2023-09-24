@@ -24,6 +24,47 @@ impl<T> Drop for RefHandle<'_, T> {
     }
 }
 
+/// Function related to reading hazard pointer protected values
+///
+/// # Safety
+/// Type cannot implement `Sync`
+pub unsafe trait Read {
+    type T;
+
+    // SAFETY: Only one `RefHandle` can exist at any given point
+    unsafe fn read_unchecked(&self) -> RefHandle<Self::T>;
+
+    fn read(&mut self) -> RefHandle<Self::T> {
+        // SAFETY: We hold a mutable reference
+        unsafe { self.read_unchecked() }
+    }
+
+    fn get(&self) -> Self::T
+    where
+        Self::T: Copy,
+    {
+        // SAFETY: Copy value and drop `RefHandle` immediately
+        unsafe { *self.read_unchecked() }
+    }
+
+    fn cloned(&self) -> Self::T
+    where
+        Self::T: Clone,
+    {
+        // SAFETY: Clone value and drop `RefHandle` immediately
+        unsafe { self.read_unchecked().clone() }
+    }
+
+    fn read_and_map<U, F: FnOnce(&Self::T) -> U>(&self, f: F) -> U {
+        // SAFETY:
+        // - Drop handle at the end of the function
+        // - We don't access the hazard pointer for the rest of the function
+        let value = unsafe { self.read_unchecked() };
+
+        f(&value)
+    }
+}
+
 fn dummy_addr() -> usize {
     static DUMMY: u8 = 0;
     addr_of!(DUMMY) as usize
@@ -115,13 +156,13 @@ impl<T> HzrdCore<T> {
     /// SAFETY:
     /// - Can only be called by the owner of the hazard pointer
     /// - The owner cannot call this again until the [`ReadHandle`] has been dropped
-    pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr) -> RefHandle<'hzrd, T> {
-        let mut ptr = self.value.load(SeqCst);
+    pub unsafe fn read<'hzrd>(core: &HzrdCore<T>, hzrd_ptr: &'hzrd HzrdPtr) -> RefHandle<'hzrd, T> {
+        let mut ptr = core.value.load(SeqCst);
         hzrd_ptr.store(ptr);
 
         // We now need to keep updating it until it is in a consistent state
         loop {
-            ptr = self.value.load(SeqCst);
+            ptr = core.value.load(SeqCst);
             if ptr as usize == hzrd_ptr.get() {
                 break;
             } else {
