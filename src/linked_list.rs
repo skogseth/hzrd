@@ -50,10 +50,13 @@ impl<T> LinkedList<T> {
         }
     }
 
-    pub fn push_front(&mut self, value: T) {
+    pub fn push_front(&mut self, value: T) -> &T {
         let Some(head) = self.head else {
             *self = LinkedList::single(value);
-            return;
+            unsafe {
+                let head_ptr = self.head.unwrap_unchecked();
+                return &(*head_ptr.as_ptr()).value;
+            }
         };
 
         let node = Node {
@@ -65,12 +68,17 @@ impl<T> LinkedList<T> {
         unsafe { (*head.as_ptr()).prev = Some(ptr) };
         self.head = Some(ptr);
         self.len += 1;
+
+        unsafe { &(*ptr.as_ptr()).value }
     }
 
-    pub fn push_back(&mut self, value: T) {
+    pub fn push_back(&mut self, value: T) -> &T {
         let Some(tail) = self.tail else {
             *self = LinkedList::single(value);
-            return;
+            unsafe {
+                let tail_ptr = self.tail.unwrap_unchecked();
+                return &(*tail_ptr.as_ptr()).value;
+            }
         };
 
         let node = Node {
@@ -82,6 +90,8 @@ impl<T> LinkedList<T> {
         unsafe { (*tail.as_ptr()).next = Some(ptr) };
         self.tail = Some(ptr);
         self.len += 1;
+
+        unsafe { &(*ptr.as_ptr()).value }
     }
 
     pub fn pop_front(&mut self) -> Option<T> {

@@ -1,52 +1,128 @@
-use std::ptr::NonNull;
-use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::Mutex;
+use std::ops::Deref;
+use std::ptr::{addr_of, NonNull};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
 
-use crate::linked_list::{LinkedList, Node};
-use crate::utils::{HzrdPtr, RetiredPtr};
-use crate::RefHandle;
+use crate::linked_list::LinkedList;
 
-/// Shared heap allocated object for `HzrdCell`
-///
-/// The `hzrd_ptrs` keep track of pointers that are in use, and cannot be freed
-/// There is one node per `HzrdCell`, which means the list also keeps track
-/// of the number of active `HzrdCell`s (akin to a very inefficent atomic counter).
-pub struct HzrdCellInner<T> {
-    pub value: AtomicPtr<T>,
-    pub hzrd_ptrs: Mutex<LinkedList<HzrdPtr<T>>>,
-    pub retired: Mutex<LinkedList<RetiredPtr<T>>>,
+/// Holds a reference to an object protected by a hazard pointer
+pub struct RefHandle<'hzrd, T> {
+    value: &'hzrd T,
+    hzrd_ptr: &'hzrd HzrdPtr,
 }
 
-impl<T> HzrdCellInner<T> {
-    pub fn new(boxed: Box<T>) -> (Self, NonNull<Node<HzrdPtr<T>>>) {
-        let hzrd_ptr = HzrdPtr::new();
-        let ptr = Box::into_raw(boxed);
+impl<T> Deref for RefHandle<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        self.value
+    }
+}
 
-        let list = LinkedList::single(hzrd_ptr);
-        // SAFETY: There must be a head node at this point
-        let node_ptr = unsafe { list.head_node().unwrap_unchecked() };
+impl<T> Drop for RefHandle<'_, T> {
+    fn drop(&mut self) {
+        // SAFETY: We are dropping so `value` will never be accessed after this
+        unsafe { self.hzrd_ptr.clear() };
+    }
+}
 
-        let core = Self {
-            value: AtomicPtr::new(ptr),
-            hzrd_ptrs: Mutex::new(list),
-            retired: Mutex::new(LinkedList::new()),
-        };
+fn dummy_addr() -> usize {
+    static DUMMY: u8 = 0;
+    addr_of!(DUMMY) as usize
+}
 
-        (core, node_ptr)
+/// Holds some address that is currently used (may be null)
+pub struct HzrdPtr(AtomicUsize);
+
+impl HzrdPtr {
+    pub fn new() -> Self {
+        HzrdPtr(AtomicUsize::new(dummy_addr()))
+    }
+
+    pub fn get(&self) -> usize {
+        self.0.load(SeqCst)
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.0.load(SeqCst) == 0
+    }
+
+    pub fn try_take(&self) -> Option<&Self> {
+        match self.0.compare_exchange(0, dummy_addr(), SeqCst, SeqCst) {
+            Ok(_) => Some(self),
+            Err(_) => None,
+        }
+    }
+
+    pub unsafe fn store<T>(&self, ptr: *mut T) {
+        self.0.store(ptr as usize, SeqCst);
+    }
+
+    pub unsafe fn clear(&self) {
+        self.0.store(dummy_addr(), SeqCst);
+    }
+
+    pub unsafe fn free(&self) {
+        self.0.store(0, SeqCst);
+    }
+}
+
+pub struct HzrdPtrs(LinkedList<HzrdPtr>);
+
+impl HzrdPtrs {
+    pub fn new() -> Self {
+        Self(LinkedList::new())
+    }
+
+    /// Get a new HzrdPtr (this may allocate a new node in the list)
+    pub fn get(&mut self) -> NonNull<HzrdPtr> {
+        // Important to only grab shared references to the HzrdPtr's
+        // as others may be looking at them
+        for node in self.0.iter() {
+            if let Some(hzrd_ptr) = node.try_take() {
+                return NonNull::from(hzrd_ptr);
+            }
+        }
+
+        let hzrd_ptr = self.0.push_back(HzrdPtr::new());
+        NonNull::from(hzrd_ptr)
+    }
+
+    pub fn contains(&self, addr: usize) -> bool {
+        self.0.iter().any(|node| node.get() == addr)
+    }
+
+    pub fn all_available(&self) -> bool {
+        self.0.iter().all(|node| node.is_available())
+    }
+}
+
+impl Default for HzrdPtrs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct HzrdCore<T> {
+    value: AtomicPtr<T>,
+}
+
+impl<T> HzrdCore<T> {
+    pub fn new(boxed: Box<T>) -> Self {
+        let value = AtomicPtr::new(Box::into_raw(boxed));
+        Self { value }
     }
 
     /// Reads the contained value and keeps it valid through the hazard pointer
     /// SAFETY:
     /// - Can only be called by the owner of the hazard pointer
     /// - The owner cannot call this again until the [`ReadHandle`] has been dropped
-    pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr<T>) -> RefHandle<'hzrd, T> {
-        let mut ptr = self.value.load(Ordering::SeqCst);
+    pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr) -> RefHandle<'hzrd, T> {
+        let mut ptr = self.value.load(SeqCst);
         hzrd_ptr.store(ptr);
 
         // We now need to keep updating it until it is in a consistent state
         loop {
-            ptr = self.value.load(Ordering::SeqCst);
-            if std::ptr::eq(ptr, hzrd_ptr.get()) {
+            ptr = self.value.load(SeqCst);
+            if ptr as usize == hzrd_ptr.get() {
                 break;
             } else {
                 hzrd_ptr.store(ptr);
@@ -62,79 +138,31 @@ impl<T> HzrdCellInner<T> {
         let new_ptr = Box::into_raw(Box::new(value));
 
         // SAFETY: Ptr must at this point be non-null
-        let old_raw_ptr = self.value.swap(new_ptr, Ordering::SeqCst);
+        let old_raw_ptr = self.value.swap(new_ptr, SeqCst);
         unsafe { NonNull::new_unchecked(old_raw_ptr) }
     }
-
-    pub fn add(&self) -> NonNull<Node<HzrdPtr<T>>> {
-        let mut guard = self.hzrd_ptrs.lock().unwrap();
-        let hzrd_ptr = HzrdPtr::new();
-        guard.push_back(hzrd_ptr);
-        // SAFETY: There must be a tail node at this point
-        unsafe { guard.tail_node().unwrap_unchecked() }
-    }
-
-    /// Reclaim available memory
-    pub fn reclaim(&self) {
-        // Try to aquire lock, exit if it is taken, as this
-        // means someone else is already reclaiming memory!
-        let Ok(mut retired) = self.retired.try_lock() else {
-            return;
-        };
-
-        // Check if it's empty, no need to move forward otherwise
-        if retired.is_empty() {
-            return;
-        }
-
-        // Wait for access to the hazard pointers
-        let hzrd_ptrs = self.hzrd_ptrs.lock().unwrap();
-
-        reclaim(&mut retired, &hzrd_ptrs);
-    }
-
-    /// Try to reclaim memory, but don't wait for the shared lock to do so
-    pub fn try_reclaim(&self) {
-        // Try to aquire lock, exit if it is taken, as this
-        // means someone else is already reclaiming memory!
-        let Ok(mut retired) = self.retired.try_lock() else {
-            return;
-        };
-
-        // Check if it's empty, no need to move forward otherwise
-        if retired.is_empty() {
-            return;
-        }
-
-        // Check if the hazard pointers are available, if not exit
-        let Ok(hzrd_ptrs) = self.hzrd_ptrs.try_lock() else {
-            return;
-        };
-
-        reclaim(&mut retired, &hzrd_ptrs);
-    }
 }
 
-impl<T> Drop for HzrdCellInner<T> {
+impl<T> Drop for HzrdCore<T> {
     fn drop(&mut self) {
         // SAFETY: No more references can be held if this is being dropped
-        let _ = unsafe { Box::from_raw(self.value.load(Ordering::SeqCst)) };
+        let _ = unsafe { Box::from_raw(self.value.load(SeqCst)) };
     }
 }
 
-pub fn reclaim<T>(
-    retired_ptrs: &mut LinkedList<RetiredPtr<T>>,
-    hzrd_ptrs: &LinkedList<HzrdPtr<T>>,
-) {
-    let mut still_active = LinkedList::new();
-    'outer: while let Some(retired_ptr) = retired_ptrs.pop_front() {
-        for hzrd_ptr in hzrd_ptrs.iter() {
-            if std::ptr::eq(retired_ptr.as_ptr(), hzrd_ptr.get()) {
-                still_active.push_back(retired_ptr);
-                continue 'outer;
-            }
-        }
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    *retired_ptrs = still_active;
+    #[test]
+    fn hzrd_ptr() {
+        let mut value = String::from("Danger!");
+        let hzrd_ptr = HzrdPtr::new();
+        unsafe { hzrd_ptr.store(&mut value) };
+        unsafe { hzrd_ptr.clear() };
+        unsafe { hzrd_ptr.store(&mut value) };
+
+        unsafe { hzrd_ptr.free() };
+        unsafe { hzrd_ptr.store(&mut value) };
+    }
 }

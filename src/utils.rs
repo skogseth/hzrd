@@ -1,5 +1,7 @@
-use std::ptr::{null_mut, NonNull};
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::ptr::NonNull;
+
+use crate::core::HzrdPtrs;
+use crate::linked_list::LinkedList;
 
 /// Place object on the heap (will leak)
 pub fn allocate<T>(object: T) -> NonNull<T> {
@@ -12,27 +14,6 @@ pub fn allocate<T>(object: T) -> NonNull<T> {
 /// SAFETY: Must point to valid heap-allocated memory
 pub unsafe fn free<T>(non_null_ptr: NonNull<T>) {
     let _ = Box::from_raw(non_null_ptr.as_ptr());
-}
-
-/// Holds some address that is currently used (may be null)
-pub struct HzrdPtr<T>(AtomicPtr<T>);
-
-impl<T> HzrdPtr<T> {
-    pub fn new() -> Self {
-        HzrdPtr(AtomicPtr::new(null_mut()))
-    }
-
-    pub fn get(&self) -> *mut T {
-        self.0.load(Ordering::SeqCst)
-    }
-
-    pub unsafe fn store(&self, ptr: *mut T) {
-        self.0.store(ptr, Ordering::SeqCst);
-    }
-
-    pub unsafe fn clear(&self) {
-        self.0.store(null_mut(), Ordering::SeqCst);
-    }
 }
 
 pub struct RetiredPtr<T>(NonNull<T>);
@@ -52,4 +33,16 @@ impl<T> Drop for RetiredPtr<T> {
         // SAFETY: No reference to this when dropped
         unsafe { free(self.0) };
     }
+}
+
+pub fn reclaim<T>(retired_ptrs: &mut LinkedList<RetiredPtr<T>>, hzrd_ptrs: &HzrdPtrs) {
+    let mut still_active = LinkedList::new();
+    while let Some(retired_ptr) = retired_ptrs.pop_front() {
+        if hzrd_ptrs.contains(retired_ptr.as_ptr() as usize) {
+            still_active.push_back(retired_ptr);
+            continue;
+        }
+    }
+
+    *retired_ptrs = still_active;
 }
