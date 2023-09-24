@@ -26,7 +26,7 @@ std::thread::scope(|s| {
 
 use std::ptr::NonNull;
 
-use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs, Read};
+use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs};
 use crate::linked_list::LinkedList;
 use crate::utils::RetiredPtr;
 use crate::RefHandle;
@@ -139,50 +139,47 @@ impl<T> Drop for HzrdWriter<T> {
 // SAFETY: We good?
 unsafe impl<T> Send for HzrdWriter<T> {}
 
-// Private methods
-impl<T> HzrdReader<'_, T> {
-    fn hzrd_ptr(&self) -> &HzrdPtr {
+unsafe impl<T> crate::core::Read for HzrdReader<'_, T> {
+    type T = T;
+
+    unsafe fn core(&self) -> &HzrdCore<Self::T> {
+        self.core
+    }
+
+    unsafe fn hzrd_ptr(&self) -> &HzrdPtr {
         // SAFETY: This pointer is valid for as long as this cell is
         unsafe { self.hzrd_ptr.as_ref() }
     }
 }
 
-unsafe impl<T> crate::core::Read for HzrdReader<'_, T> {
-    type T = T;
-    unsafe fn read_unchecked(&self) -> RefHandle<Self::T> {
-        let hzrd_ptr = self.hzrd_ptr();
-        HzrdCore::read(self.core, hzrd_ptr)
-    }
-}
-
 impl<T> HzrdReader<'_, T> {
     pub fn read(&mut self) -> RefHandle<T> {
-        <Self as Read>::read(self)
+        <Self as crate::core::Read>::read(self)
     }
 
     pub fn get(&self) -> T
     where
         T: Copy,
     {
-        <Self as Read>::get(self)
+        <Self as crate::core::Read>::get(self)
     }
 
     pub fn cloned(&self) -> T
     where
         T: Clone,
     {
-        <Self as Read>::cloned(self)
+        <Self as crate::core::Read>::cloned(self)
     }
 
     pub fn read_and_map<U, F: FnOnce(&T) -> U>(&self, f: F) -> U {
-        <Self as Read>::read_and_map(self, f)
+        <Self as crate::core::Read>::read_and_map(self, f)
     }
 }
 
 impl<T> Drop for HzrdReader<'_, T> {
     fn drop(&mut self) {
         // SAFETY: We won't touch this after this point
-        unsafe { self.hzrd_ptr().free() };
+        unsafe { self.hzrd_ptr.as_ref().free() };
     }
 }
 

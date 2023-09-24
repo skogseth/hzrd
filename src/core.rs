@@ -31,8 +31,35 @@ impl<T> Drop for RefHandle<'_, T> {
 pub unsafe trait Read {
     type T;
 
-    // SAFETY: Only one `RefHandle` can exist at any given point
-    unsafe fn read_unchecked(&self) -> RefHandle<Self::T>;
+    unsafe fn core(&self) -> &HzrdCore<Self::T>;
+    unsafe fn hzrd_ptr(&self) -> &HzrdPtr;
+
+    /// Reads the contained value and keeps it valid through the hazard pointer
+    ///
+    /// SAFETY:
+    /// - Can only be called by the owner of the hazard pointer
+    /// - The owner cannot call this again until the [`ReadHandle`] has been dropped
+    unsafe fn read_unchecked(&self) -> RefHandle<Self::T> {
+        let core = self.core();
+        let hzrd_ptr = self.hzrd_ptr();
+
+        let mut ptr = core.value.load(SeqCst);
+        hzrd_ptr.store(ptr);
+
+        // We now need to keep updating it until it is in a consistent state
+        loop {
+            ptr = core.value.load(SeqCst);
+            if ptr as usize == hzrd_ptr.get() {
+                break;
+            } else {
+                hzrd_ptr.store(ptr);
+            }
+        }
+
+        // SAFETY: This pointer is now held valid by the hazard pointer
+        let value = &*ptr;
+        RefHandle { value, hzrd_ptr }
+    }
 
     fn read(&mut self) -> RefHandle<Self::T> {
         // SAFETY: We hold a mutable reference
@@ -150,29 +177,6 @@ impl<T> HzrdCore<T> {
     pub fn new(boxed: Box<T>) -> Self {
         let value = AtomicPtr::new(Box::into_raw(boxed));
         Self { value }
-    }
-
-    /// Reads the contained value and keeps it valid through the hazard pointer
-    /// SAFETY:
-    /// - Can only be called by the owner of the hazard pointer
-    /// - The owner cannot call this again until the [`ReadHandle`] has been dropped
-    pub unsafe fn read<'hzrd>(core: &HzrdCore<T>, hzrd_ptr: &'hzrd HzrdPtr) -> RefHandle<'hzrd, T> {
-        let mut ptr = core.value.load(SeqCst);
-        hzrd_ptr.store(ptr);
-
-        // We now need to keep updating it until it is in a consistent state
-        loop {
-            ptr = core.value.load(SeqCst);
-            if ptr as usize == hzrd_ptr.get() {
-                break;
-            } else {
-                hzrd_ptr.store(ptr);
-            }
-        }
-
-        // SAFETY: This pointer is now held valid by the hazard pointer
-        let value = &*ptr;
-        RefHandle { value, hzrd_ptr }
     }
 
     pub fn swap(&self, value: T) -> NonNull<T> {

@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
-use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs, Read, RefHandle};
+use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs, RefHandle};
 use crate::linked_list::LinkedList;
 use crate::utils::RetiredPtr;
 use crate::utils::{allocate, free};
@@ -36,12 +36,12 @@ impl<T> HzrdCell<T> {
 unsafe impl<T> crate::core::Read for HzrdCell<T> {
     type T = T;
 
-    unsafe fn read_unchecked(&self) -> RefHandle<Self::T> {
-        let core = &self.inner().core;
-        let hzrd_ptr = self.hzrd_ptr();
+    unsafe fn core(&self) -> &HzrdCore<Self::T> {
+        &self.inner().core
+    }
 
-        // SAFETY: We are the owner of the hazard pointer
-        unsafe { HzrdCore::read(core, hzrd_ptr) }
+    unsafe fn hzrd_ptr(&self) -> &HzrdPtr {
+        self.hzrd_ptr()
     }
 }
 
@@ -122,7 +122,7 @@ impl<T> HzrdCell<T> {
     ```
     */
     pub fn read(&mut self) -> RefHandle<T> {
-        <Self as Read>::read(self)
+        <Self as crate::core::Read>::read(self)
     }
 
     /**
@@ -139,7 +139,7 @@ impl<T> HzrdCell<T> {
     where
         T: Copy,
     {
-        <Self as Read>::get(self)
+        <Self as crate::core::Read>::get(self)
     }
 
     /**
@@ -156,7 +156,7 @@ impl<T> HzrdCell<T> {
     where
         T: Clone,
     {
-        <Self as Read>::cloned(self)
+        <Self as crate::core::Read>::cloned(self)
     }
 
     /**
@@ -181,7 +181,7 @@ impl<T> HzrdCell<T> {
     ```
     */
     pub fn read_and_map<U, F: FnOnce(&T) -> U>(&self, f: F) -> U {
-        <Self as Read>::read_and_map(self, f)
+        <Self as crate::core::Read>::read_and_map(self, f)
     }
 
     /// Replace the contained value with a new value, returning the old
