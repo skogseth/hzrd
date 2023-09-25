@@ -24,6 +24,74 @@ impl<T> Drop for RefHandle<'_, T> {
     }
 }
 
+/// Function related to reading hazard pointer protected values
+///
+/// # Safety
+/// Type cannot implement `Sync`
+pub unsafe trait Read {
+    type T;
+
+    unsafe fn core(&self) -> &HzrdCore<Self::T>;
+    unsafe fn hzrd_ptr(&self) -> &HzrdPtr;
+
+    /// Reads the contained value and keeps it valid through the hazard pointer
+    ///
+    /// SAFETY:
+    /// - Can only be called by the owner of the hazard pointer
+    /// - The owner cannot call this again until the [`ReadHandle`] has been dropped
+    unsafe fn read_unchecked(&self) -> RefHandle<Self::T> {
+        let core = self.core();
+        let hzrd_ptr = self.hzrd_ptr();
+
+        let mut ptr = core.value.load(SeqCst);
+        hzrd_ptr.store(ptr);
+
+        // We now need to keep updating it until it is in a consistent state
+        loop {
+            ptr = core.value.load(SeqCst);
+            if ptr as usize == hzrd_ptr.get() {
+                break;
+            } else {
+                hzrd_ptr.store(ptr);
+            }
+        }
+
+        // SAFETY: This pointer is now held valid by the hazard pointer
+        let value = &*ptr;
+        RefHandle { value, hzrd_ptr }
+    }
+
+    fn read(&mut self) -> RefHandle<Self::T> {
+        // SAFETY: We hold a mutable reference
+        unsafe { self.read_unchecked() }
+    }
+
+    fn get(&self) -> Self::T
+    where
+        Self::T: Copy,
+    {
+        // SAFETY: Copy value and drop `RefHandle` immediately
+        unsafe { *self.read_unchecked() }
+    }
+
+    fn cloned(&self) -> Self::T
+    where
+        Self::T: Clone,
+    {
+        // SAFETY: Clone value and drop `RefHandle` immediately
+        unsafe { self.read_unchecked().clone() }
+    }
+
+    fn read_and_map<U, F: FnOnce(&Self::T) -> U>(&self, f: F) -> U {
+        // SAFETY:
+        // - Drop handle at the end of the function
+        // - We don't access the hazard pointer for the rest of the function
+        let value = unsafe { self.read_unchecked() };
+
+        f(&value)
+    }
+}
+
 fn dummy_addr() -> usize {
     static DUMMY: u8 = 0;
     addr_of!(DUMMY) as usize
@@ -109,29 +177,6 @@ impl<T> HzrdCore<T> {
     pub fn new(boxed: Box<T>) -> Self {
         let value = AtomicPtr::new(Box::into_raw(boxed));
         Self { value }
-    }
-
-    /// Reads the contained value and keeps it valid through the hazard pointer
-    /// SAFETY:
-    /// - Can only be called by the owner of the hazard pointer
-    /// - The owner cannot call this again until the [`ReadHandle`] has been dropped
-    pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr) -> RefHandle<'hzrd, T> {
-        let mut ptr = self.value.load(SeqCst);
-        hzrd_ptr.store(ptr);
-
-        // We now need to keep updating it until it is in a consistent state
-        loop {
-            ptr = self.value.load(SeqCst);
-            if ptr as usize == hzrd_ptr.get() {
-                break;
-            } else {
-                hzrd_ptr.store(ptr);
-            }
-        }
-
-        // SAFETY: This pointer is now held valid by the hazard pointer
-        let value = &*ptr;
-        RefHandle { value, hzrd_ptr }
     }
 
     pub fn swap(&self, value: T) -> NonNull<T> {

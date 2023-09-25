@@ -139,45 +139,47 @@ impl<T> Drop for HzrdWriter<T> {
 // SAFETY: We good?
 unsafe impl<T> Send for HzrdWriter<T> {}
 
-// Private methods
-impl<T> HzrdReader<'_, T> {
-    fn hzrd_ptr(&self) -> &HzrdPtr {
+unsafe impl<T> crate::core::Read for HzrdReader<'_, T> {
+    type T = T;
+
+    unsafe fn core(&self) -> &HzrdCore<Self::T> {
+        self.core
+    }
+
+    unsafe fn hzrd_ptr(&self) -> &HzrdPtr {
         // SAFETY: This pointer is valid for as long as this cell is
         unsafe { self.hzrd_ptr.as_ref() }
     }
 }
 
 impl<T> HzrdReader<'_, T> {
-    // SAFETY: Only one RefHandle at any given point
-    unsafe fn __read(&self) -> RefHandle<T> {
-        let hzrd_ptr = self.hzrd_ptr();
-        self.core.read(hzrd_ptr)
-    }
-
-    pub fn read(reader: &mut Self) -> RefHandle<T> {
-        // SAFETY:
-        // - We are the owner of the hazard pointer
-        // - RefHandle holds exlusive reference via &mut, meaning
-        //   no other accesses to hazard pointer before it is dropped
-        unsafe { reader.__read() }
+    pub fn read(&mut self) -> RefHandle<T> {
+        <Self as crate::core::Read>::read(self)
     }
 
     pub fn get(&self) -> T
     where
         T: Copy,
     {
-        // SAFETY:
-        // - Not `Sync`
-        // - This is the only place the thread can be
-        // - We immediately drop the RefHandle
-        unsafe { *self.__read() }
+        <Self as crate::core::Read>::get(self)
+    }
+
+    pub fn cloned(&self) -> T
+    where
+        T: Clone,
+    {
+        <Self as crate::core::Read>::cloned(self)
+    }
+
+    pub fn read_and_map<U, F: FnOnce(&T) -> U>(&self, f: F) -> U {
+        <Self as crate::core::Read>::read_and_map(self, f)
     }
 }
 
 impl<T> Drop for HzrdReader<'_, T> {
     fn drop(&mut self) {
         // SAFETY: We won't touch this after this point
-        unsafe { self.hzrd_ptr().free() };
+        unsafe { self.hzrd_ptr.as_ref().free() };
     }
 }
 
