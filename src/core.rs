@@ -1,8 +1,7 @@
+use std::collections::LinkedList;
 use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
-
-use crate::linked_list::LinkedList;
 
 /// Holds a reference to an object protected by a hazard pointer
 pub struct RefHandle<'hzrd, T> {
@@ -150,7 +149,9 @@ impl HzrdPtrs {
             }
         }
 
-        let hzrd_ptr = self.0.push_back(HzrdPtr::new());
+        self.0.push_back(HzrdPtr::new());
+        let hzrd_ptr = self.0.back().expect("expected non-empty list");
+
         NonNull::from(hzrd_ptr)
     }
 
