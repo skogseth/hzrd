@@ -26,9 +26,7 @@ std::thread::scope(|s| {
 
 use std::ptr::NonNull;
 
-use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs};
-use crate::linked_list::LinkedList;
-use crate::utils::RetiredPtr;
+use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs, RetiredPtr, RetiredPtrs};
 use crate::RefHandle;
 
 /**
@@ -53,7 +51,7 @@ pub struct HzrdReader<'writer, T> {
 
 struct Ptrs<T> {
     hzrd: HzrdPtrs,
-    retired: LinkedList<RetiredPtr<T>>,
+    retired: RetiredPtrs<T>,
 }
 
 impl<T> HzrdWriter<T> {
@@ -110,8 +108,8 @@ impl<T> HzrdWriter<T> {
         // - The reference is not held alive beyond this function
         let ptrs = unsafe { &mut *self.ptrs.as_ptr() };
 
-        ptrs.retired.push_back(RetiredPtr::new(old_ptr));
-        crate::utils::reclaim(&mut ptrs.retired, &ptrs.hzrd);
+        ptrs.retired.add(RetiredPtr::new(old_ptr));
+        ptrs.retired.reclaim(&ptrs.hzrd);
     }
 }
 
@@ -119,7 +117,7 @@ impl<T> From<Box<T>> for HzrdWriter<T> {
     fn from(boxed: Box<T>) -> Self {
         let ptrs = Ptrs {
             hzrd: HzrdPtrs::new(),
-            retired: LinkedList::new(),
+            retired: RetiredPtrs::new(),
         };
 
         Self {

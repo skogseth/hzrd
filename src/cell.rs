@@ -3,9 +3,7 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
-use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs, RefHandle};
-use crate::linked_list::LinkedList;
-use crate::utils::RetiredPtr;
+use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs, RefHandle, RetiredPtr, RetiredPtrs};
 use crate::utils::{allocate, free};
 
 /**
@@ -82,13 +80,13 @@ impl<T> HzrdCell<T> {
         let old_ptr = inner.core.swap(value);
 
         let mut retired = inner.retired.lock().unwrap();
-        retired.push_back(RetiredPtr::new(old_ptr));
+        retired.add(RetiredPtr::new(old_ptr));
 
         let Ok(hzrd_ptrs) = inner.hzrd_ptrs.try_lock() else {
             return;
         };
 
-        crate::utils::reclaim(&mut retired, &hzrd_ptrs);
+        retired.reclaim(&hzrd_ptrs);
     }
 
     /**
@@ -199,11 +197,7 @@ impl<T> HzrdCell<T> {
     pub fn just_set(&self, value: T) {
         let inner = self.inner();
         let old_ptr = inner.core.swap(value);
-        inner
-            .retired
-            .lock()
-            .unwrap()
-            .push_back(RetiredPtr::new(old_ptr));
+        inner.retired.lock().unwrap().add(RetiredPtr::new(old_ptr));
     }
 
     /// Reclaim available memory
@@ -288,7 +282,7 @@ impl<T> Drop for HzrdCell<T> {
 struct HzrdCellInner<T> {
     core: HzrdCore<T>,
     hzrd_ptrs: Mutex<HzrdPtrs>,
-    retired: Mutex<LinkedList<RetiredPtr<T>>>,
+    retired: Mutex<RetiredPtrs<T>>,
 }
 
 impl<T> HzrdCellInner<T> {
@@ -296,7 +290,7 @@ impl<T> HzrdCellInner<T> {
         Self {
             core: HzrdCore::new(boxed),
             hzrd_ptrs: Mutex::new(HzrdPtrs::new()),
-            retired: Mutex::new(LinkedList::new()),
+            retired: Mutex::new(RetiredPtrs::new()),
         }
     }
 
@@ -320,7 +314,7 @@ impl<T> HzrdCellInner<T> {
         // Wait for access to the hazard pointers
         let hzrd_ptrs = self.hzrd_ptrs.lock().unwrap();
 
-        crate::utils::reclaim(&mut retired, &hzrd_ptrs);
+        retired.reclaim(&hzrd_ptrs);
     }
 
     /// Try to reclaim memory, but don't wait for the shared lock to do so
@@ -341,7 +335,7 @@ impl<T> HzrdCellInner<T> {
             return;
         };
 
-        crate::utils::reclaim(&mut retired, &hzrd_ptrs);
+        retired.reclaim(&hzrd_ptrs);
     }
 }
 

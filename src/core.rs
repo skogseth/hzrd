@@ -195,6 +195,63 @@ impl<T> Drop for HzrdCore<T> {
     }
 }
 
+pub struct RetiredPtr<T>(NonNull<T>);
+
+impl<T> RetiredPtr<T> {
+    pub fn new(ptr: NonNull<T>) -> Self {
+        RetiredPtr(ptr)
+    }
+
+    pub fn as_ptr(&self) -> *mut T {
+        self.0.as_ptr()
+    }
+}
+
+impl<T> Drop for RetiredPtr<T> {
+    fn drop(&mut self) {
+        // SAFETY: No reference to this when dropped
+        unsafe { crate::utils::free(self.0) };
+    }
+}
+
+pub struct RetiredPtrs<T>(Vec<RetiredPtr<T>>);
+
+impl<T> RetiredPtrs<T> {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn add(&mut self, val: RetiredPtr<T>) {
+        self.0.push(val);
+    }
+
+    pub fn reclaim(&mut self, hzrd_ptrs: &HzrdPtrs) {
+        let mut still_active = Vec::new();
+        while let Some(retired_ptr) = self.0.pop() {
+            if hzrd_ptrs.contains(retired_ptr.as_ptr() as usize) {
+                still_active.push(retired_ptr);
+                continue;
+            }
+        }
+
+        self.0 = still_active;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl<T> Default for RetiredPtrs<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
