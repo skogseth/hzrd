@@ -90,7 +90,7 @@ impl<T> HzrdCell<T> {
     }
 
     /**
-    Get a handle to read the value held by the `HzrdCell`
+    Get a handle holding a reference to the current value held by the `HzrdCell`
 
     The functionality of this is somewhat similar to a [`MutexGuard`](std::sync::MutexGuard), except the [`RefHandle`] only accepts reading the value. There is no locking mechanism needed to grab this handle, although there might be a short wait if the read overlaps with a write.
 
@@ -158,7 +158,7 @@ impl<T> HzrdCell<T> {
     }
 
     /**
-    Read contained value and map it
+    Read the contained value and map it
 
     ```
     # use hzrd::HzrdCell;

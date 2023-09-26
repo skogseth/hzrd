@@ -11,7 +11,7 @@ This pair is the most primitive constructs found in this crate, as they contain 
 let ready_writer = HzrdWriter::new(false);
 
 std::thread::scope(|s| {
-    let ready_reader = ready_writer.reader();
+    let ready_reader = ready_writer.new_reader();
     s.spawn(move || {
         while !ready_reader.get() {
             std::hint::spin_loop();
@@ -65,7 +65,7 @@ impl<T> HzrdWriter<T> {
     #
     let writer = HzrdWriter::new(0);
     #
-    # assert_eq!(writer.reader().get(), 0);
+    # assert_eq!(writer.new_reader().get(), 0);
     ```
     */
     pub fn new(value: T) -> Self {
@@ -79,12 +79,12 @@ impl<T> HzrdWriter<T> {
     # use hzrd::pair::HzrdWriter;
     #
     let writer = HzrdWriter::new(0);
-    let reader = writer.reader();
+    let reader = writer.new_reader();
     writer.set(1);
     assert_eq!(reader.get(), 1);
     ```
     */
-    pub fn reader(&self) -> HzrdReader<T> {
+    pub fn new_reader(&self) -> HzrdReader<T> {
         // SAFETY:
         // - Only the writer can access this
         // - Writer is not Sync, so only this thread can write
@@ -98,6 +98,18 @@ impl<T> HzrdWriter<T> {
         }
     }
 
+    /**
+    Set the value of the container
+
+    ```
+    # use hzrd::pair::HzrdWriter;
+    #
+    let writer = HzrdWriter::new(0);
+    let reader = writer.new_reader();
+    writer.set(1);
+    assert_eq!(reader.get(), 1);
+    ```
+    */
     pub fn set(&self, value: T) {
         let old_ptr = self.core.swap(value);
 
@@ -151,10 +163,16 @@ unsafe impl<T> crate::core::Read for HzrdReader<'_, T> {
 }
 
 impl<T> HzrdReader<'_, T> {
+    /**
+    Get a handle holding a reference to the current value of the container
+
+    See [`HzrdCell::read`] for a more detailed description
+    */
     pub fn read(&mut self) -> RefHandle<T> {
         <Self as crate::core::Read>::read(self)
     }
 
+    /// Get the value of the container (requires the type to be [`Copy`])
     pub fn get(&self) -> T
     where
         T: Copy,
@@ -162,6 +180,7 @@ impl<T> HzrdReader<'_, T> {
         <Self as crate::core::Read>::get(self)
     }
 
+    /// Read the contained value and clone it (requires type to be [`Clone`])
     pub fn cloned(&self) -> T
     where
         T: Clone,
@@ -169,6 +188,9 @@ impl<T> HzrdReader<'_, T> {
         <Self as crate::core::Read>::cloned(self)
     }
 
+    /// Read the contained value and map it
+    ///
+    /// See [`HzrdCell::read_and_map`] for a more detailed description
     pub fn read_and_map<U, F: FnOnce(&T) -> U>(&self, f: F) -> U {
         <Self as crate::core::Read>::read_and_map(self, f)
     }
@@ -198,7 +220,7 @@ mod tests {
         let writer = HzrdWriter::new('a');
 
         std::thread::spawn(move || {
-            let val: char = writer.reader().get();
+            let val: char = writer.new_reader().get();
             assert_eq!(val, 'a');
         });
     }
@@ -214,13 +236,13 @@ mod tests {
         let writer = HzrdWriter::new(0);
 
         std::thread::scope(|s| {
-            let mut reader = writer.reader();
+            let mut reader = writer.new_reader();
             s.spawn(move || {
                 let handle = HzrdReader::read(&mut reader);
                 assert!(matches!(*handle, 0 | 1));
             });
 
-            let mut reader = writer.reader();
+            let mut reader = writer.new_reader();
             s.spawn(move || {
                 let handle = HzrdReader::read(&mut reader);
                 assert!(matches!(*handle, 0 | 1));
@@ -228,7 +250,7 @@ mod tests {
 
             writer.set(1);
 
-            let mut reader = writer.reader();
+            let mut reader = writer.new_reader();
             s.spawn(move || {
                 let handle = HzrdReader::read(&mut reader);
                 assert_eq!(*handle, 1);
