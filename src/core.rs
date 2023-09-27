@@ -227,15 +227,7 @@ impl<T> RetiredPtrs<T> {
     }
 
     pub fn reclaim(&mut self, hzrd_ptrs: &HzrdPtrs) {
-        let mut still_active = Vec::new();
-        while let Some(retired_ptr) = self.0.pop() {
-            if hzrd_ptrs.contains(retired_ptr.as_ptr() as usize) {
-                still_active.push(retired_ptr);
-                continue;
-            }
-        }
-
-        self.0 = still_active;
+        self.0.retain(|p| hzrd_ptrs.contains(p.as_ptr() as usize));
     }
 
     pub fn is_empty(&self) -> bool {
@@ -267,5 +259,28 @@ mod tests {
 
         unsafe { hzrd_ptr.free() };
         unsafe { hzrd_ptr.store(&mut value) };
+    }
+
+    #[test]
+    fn retirement() {
+        let value = Box::into_raw(Box::new([1,2,3]));
+        let value = unsafe { NonNull::new_unchecked(value) };
+
+        let mut hzrd_ptrs = HzrdPtrs::new();
+        let mut retired = RetiredPtrs::new();
+
+        let hzrd_ptr = unsafe { hzrd_ptrs.get().as_ref() };
+        unsafe { hzrd_ptr.store(value.as_ptr()) };
+
+        retired.add(RetiredPtr::new(value));
+        assert_eq!(retired.len(), 1);
+
+        retired.reclaim(&hzrd_ptrs);
+        assert_eq!(retired.len(), 1);
+
+        unsafe { hzrd_ptr.clear() };
+        retired.reclaim(&hzrd_ptrs);
+        assert_eq!(retired.len(), 0);
+        assert!(retired.is_empty());
     }
 }
