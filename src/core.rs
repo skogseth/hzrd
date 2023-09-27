@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn retirement() {
-        let value = Box::into_raw(Box::new([1,2,3]));
+        let value = Box::into_raw(Box::new([1, 2, 3]));
         let value = unsafe { NonNull::new_unchecked(value) };
 
         let mut hzrd_ptrs = HzrdPtrs::new();

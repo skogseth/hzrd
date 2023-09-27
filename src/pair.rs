@@ -37,21 +37,25 @@ For in-depth guide see the [module-level documentation](crate::pair).
 pub struct HzrdWriter<T> {
     core: Box<HzrdCore<T>>,
     ptrs: NonNull<Ptrs<T>>,
-}
-
-/**
-Container type with the ability to read the contained value.
-
-For in-depth guide see the [module-level documentation](crate::pair).
-*/
-pub struct HzrdReader<'writer, T> {
-    core: &'writer HzrdCore<T>,
     hzrd_ptr: NonNull<HzrdPtr>,
 }
 
 struct Ptrs<T> {
     hzrd: HzrdPtrs,
     retired: RetiredPtrs<T>,
+}
+
+unsafe impl<T> crate::core::Read for HzrdWriter<T> {
+    type T = T;
+
+    unsafe fn core(&self) -> &HzrdCore<Self::T> {
+        &self.core
+    }
+
+    unsafe fn hzrd_ptr(&self) -> &HzrdPtr {
+        // SAFETY: This pointer is valid for as long as this cell is
+        unsafe { self.hzrd_ptr.as_ref() }
+    }
 }
 
 impl<T> HzrdWriter<T> {
@@ -65,7 +69,7 @@ impl<T> HzrdWriter<T> {
     #
     let writer = HzrdWriter::new(0);
     #
-    # assert_eq!(writer.new_reader().get(), 0);
+    # assert_eq!(writer.get(), 0);
     ```
     */
     pub fn new(value: T) -> Self {
@@ -123,18 +127,53 @@ impl<T> HzrdWriter<T> {
         ptrs.retired.add(RetiredPtr::new(old_ptr));
         ptrs.retired.reclaim(&ptrs.hzrd);
     }
+
+    /**
+    Get a handle holding a reference to the current value of the container
+
+    See [`HzrdCell::read`] for a more detailed description
+    */
+    pub fn read(&mut self) -> RefHandle<T> {
+        <Self as crate::core::Read>::read(self)
+    }
+
+    /// Get the value of the container (requires the type to be [`Copy`])
+    pub fn get(&self) -> T
+    where
+        T: Copy,
+    {
+        <Self as crate::core::Read>::get(self)
+    }
+
+    /// Read the contained value and clone it (requires type to be [`Clone`])
+    pub fn cloned(&self) -> T
+    where
+        T: Clone,
+    {
+        <Self as crate::core::Read>::cloned(self)
+    }
+
+    /// Read the contained value and map it
+    ///
+    /// See [`HzrdCell::read_and_map`] for a more detailed description
+    pub fn read_and_map<U, F: FnOnce(&T) -> U>(&self, f: F) -> U {
+        <Self as crate::core::Read>::read_and_map(self, f)
+    }
 }
 
 impl<T> From<Box<T>> for HzrdWriter<T> {
     fn from(boxed: Box<T>) -> Self {
-        let ptrs = Ptrs {
+        let mut ptrs = Ptrs {
             hzrd: HzrdPtrs::new(),
             retired: RetiredPtrs::new(),
         };
 
+        let hzrd_ptr = ptrs.hzrd.get();
+
         Self {
             core: Box::new(HzrdCore::new(boxed)),
             ptrs: crate::utils::allocate(ptrs),
+            hzrd_ptr,
         }
     }
 }
@@ -148,6 +187,16 @@ impl<T> Drop for HzrdWriter<T> {
 
 // SAFETY: We good?
 unsafe impl<T> Send for HzrdWriter<T> {}
+
+/**
+Container type with the ability to read the contained value.
+
+For in-depth guide see the [module-level documentation](crate::pair).
+*/
+pub struct HzrdReader<'writer, T> {
+    core: &'writer HzrdCore<T>,
+    hzrd_ptr: NonNull<HzrdPtr>,
+}
 
 unsafe impl<T> crate::core::Read for HzrdReader<'_, T> {
     type T = T;
