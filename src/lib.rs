@@ -2,11 +2,11 @@
 This crate provides a safe API for shared mutability using hazard pointers for memory reclamation.
 
 # [`HzrdCell`]
-The simplest entrypoint to this crate is the [`HzrdCell`], which provides an API similar to that of the standard library's [`Cell`](std::cell::Cell)-type. However, [`HzrdCell`] allows shared mutation across multiple threads.
+The simplest entrypoint to this crate is the [`HzrdCell`], which provides an API reminiscent to that of the standard library's [`Cell`](std::cell::Cell)-type. However, [`HzrdCell`] allows shared mutation across multiple threads.
 
-The main advantage of [`HzrdCell`], compared to something like a [`Mutex`](std::sync::Mutex), is that reading and writing to the value is lock-free. This is offset by an increased memory use, a significant overhead for creating/destroying cells, as well as some... funkiness. [`HzrdCell`] requires in contrast to the [`Mutex`](std::sync::Mutex) no additional wrapping, such as reference counting, in order to keep references valid for threads that may outlive eachother. There is an inherent reference count in the core functionality of [`HzrdCell`] which maintains this safety.
+The main advantage of [`HzrdCell`], compared to something like a [`Mutex`](std::sync::Mutex), is that reading and writing to the value is lock-free. This is offset by an increased memory use, a significant overhead for creating/destroying cells, as well as some... funkiness. [`HzrdCell`] requires in contrast to the [`Mutex`](std::sync::Mutex) no additional wrapping, such as reference counting, in order to keep references valid for threads that may outlive eachother: There is an inherent reference count in the core functionality of [`HzrdCell`] which maintains this.
 
-[`HzrdCell`] is particularly nice to work with if the underlying type implements copy. The [`get`](HzrdCell::get) method is lock-free, and requires minimal overhead. The [`set`](HzrdCell::set) method is mostly lock-free: The value is instantly updated, but there is some overhead following the swap which requires a lock to be acquired. However, this lock holds no contention with the reading methods of the cell.
+Reading the value of the cell, e.g. via the [`get`](HzrdCell::get) method, is lock-free. Writing to the value is instant, but there is some overhead following the swap which requires locking the metadata of the cell (to allow some synchronization of garbage collection between the cells). The main way of writing to the value is via the [`set`](HzrdCell::set) method. Here is an example of [`HzrdCell`] in use.
 
 ```
 # fn main() -> Result<(), &'static str> {
@@ -22,9 +22,9 @@ enum State {
     Finished,
 }
 
-let state = HzrdCell::new(State::Idle);
+let mut state = HzrdCell::new(State::Idle);
 
-let state_1 = HzrdCell::clone(&state);
+let mut state_1 = HzrdCell::clone(&state);
 let handle_1 = thread::spawn(move || {
     thread::sleep(Duration::from_millis(1));
     match state_1.get() {
@@ -50,40 +50,19 @@ assert_eq!(state.get(), State::Finished);
 # }
 ```
 
-If you want to immutably borrow the underlying value then this is done by acquiring a [`RefHandle`]. At this point the [`HzrdCell`] shows off some of its "funkiness". Acquiring a [`RefHandle`] requires an exclusive (aka mutable) borrow of the cell, which in turn means the cell must be marked as mutable. Here is an example for a non-copy type, where a [`RefHandle`] is acquired and used.
+# The elephant in the room
+The keen eye might have observed some of the "funkiness" of [`HzrdCell`] in the previous example: Reading the value of the cell required it to be mutable, whilst writing to the cell did not. Exclusivity is usually associated with mutation, but for the [`HzrdCell`] this relationship is inversed in order to bend the rules of mutation. Another example, here using the [`read`](HzrdCell::read) function to acquire a [`RefHandle`] to the underlying value, as it doesn't implement copy:
 
 ```
-# fn main() -> Result<(), &'static str> {
-use hzrd::HzrdCell;
-
-let string = String::from("Hello, world!");
-let cell = HzrdCell::new(string);
-
-// Notice the strangeness that aquiring the `RefHandle` requires mut
-let mut cell_1 = HzrdCell::clone(&cell);
-let handle_1 = std::thread::spawn(move || {
-    let string = HzrdCell::read(&mut cell_1);
-    if *string == "Hello, world!" {
-        println!("I was first");
-    } else {
-        println!("The other thread was first");
-    }
-});
-
-// ...whilst changing the value does not
-let cell_2 = HzrdCell::clone(&cell);
-let handle_2 = std::thread::spawn(move || {
-    cell_2.set(String::new());
-});
+# use hzrd::HzrdCell;
 #
-#     handle_1.join().map_err(|_| "Thread 1 failed")?;
-#     handle_2.join().map_err(|_| "Thread 2 failed")?;
-#
-#     Ok(())
-# }
+// NOTE: The cell must be marked as mutable to allow reading the value
+let mut cell = HzrdCell::new([0, 1, 2]);
+
+// NOTE: Associated function syntax used to clarify mutation requirement
+let handle = HzrdCell::read(&mut cell);
+assert_eq!(handle[0], 0);
 ```
-
-There is no way to acquire a mutable borrow to the underlying value as that inherently requires locking the value.
 */
 
 mod cell;

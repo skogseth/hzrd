@@ -1,4 +1,3 @@
-use std::fmt::Display;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::Mutex;
@@ -30,8 +29,7 @@ impl<T> HzrdCell<T> {
     }
 }
 
-// SAFETY: `HzrdCell` is not `Sync`
-unsafe impl<T> crate::core::Read for HzrdCell<T> {
+impl<T> crate::core::Read for HzrdCell<T> {
     type T = T;
 
     unsafe fn core(&self) -> &HzrdCore<Self::T> {
@@ -54,6 +52,7 @@ impl<T> HzrdCell<T> {
     #
     let cell = HzrdCell::new(0);
     #
+    # let mut cell = cell;
     # assert_eq!(cell.get(), 0);
     ```
     */
@@ -72,6 +71,7 @@ impl<T> HzrdCell<T> {
     let cell = HzrdCell::new(0);
     cell.set(1);
     #
+    # let mut cell = cell;
     # assert_eq!(cell.get(), 1);
     ```
     */
@@ -89,15 +89,21 @@ impl<T> HzrdCell<T> {
         retired.reclaim(&hzrd_ptrs);
     }
 
+    /// Set the value of the cell, without reclaiming memory
+    ///
+    /// This method may block after the value has been set.
+    pub fn just_set(&self, value: T) {
+        let inner = self.inner();
+        let old_ptr = inner.core.swap(value);
+        inner.retired.lock().unwrap().add(RetiredPtr::new(old_ptr));
+    }
+
     /**
     Get a handle holding a reference to the current value held by the `HzrdCell`
 
     The functionality of this is somewhat similar to a [`MutexGuard`](std::sync::MutexGuard), except the [`RefHandle`] only accepts reading the value. There is no locking mechanism needed to grab this handle, although there might be a short wait if the read overlaps with a write.
 
     The [`RefHandle`] acquired holds a shared reference to the value of the [`HzrdCell`] as it was when the [`read`](Self::read) function was called. If the value of the [`HzrdCell`] is changed after the [`RefHandle`] is acquired its new value is not reflected in the value of the [`RefHandle`], the old value is held alive atleast until all references are dropped. See the documentation of [`RefHandle`] for more information.
-
-    # The elephant in the room
-    Acquiring a [`RefHandle`] does, maybe surprisingly, require a mutable borrow. This is caused by a core invariant of the cell: There can only be one read at any given point. This exclusivity is usually associated with mutation, but for the [`HzrdCell`] (as well as the standard library's [`Cell`](std::cell::Cell)) this relationship is inversed in order to bend the rules of mutation. To remedy some of this "strangeness" there are multiple helper functions to avoid directly relying on [`RefHandle`]s, such as [`get`](Self::get), [`cloned`](Self::cloned) and [`read_and_map`](Self::read_and_map).
 
     # Example
     ```
@@ -108,7 +114,7 @@ impl<T> HzrdCell<T> {
     // NOTE: The cell must be marked as mutable to allow calling `read`
     let mut cell = HzrdCell::new(string);
 
-    // NOTE: Associated function syntax is required
+    // NOTE: Associated function syntax used to clarify mutation requirement
     let handle = HzrdCell::read(&mut cell);
 
     // We can create multiple references from a single handle
@@ -129,11 +135,11 @@ impl<T> HzrdCell<T> {
     ```
     # use hzrd::HzrdCell;
     #
-    let cell = HzrdCell::new(100);
+    let mut cell = HzrdCell::new(100);
     assert_eq!(cell.get(), 100);
     ```
     */
-    pub fn get(&self) -> T
+    pub fn get(&mut self) -> T
     where
         T: Copy,
     {
@@ -146,58 +152,15 @@ impl<T> HzrdCell<T> {
     ```
     # use hzrd::HzrdCell;
     #
-    let cell = HzrdCell::new([1, 2, 3]);
+    let mut cell = HzrdCell::new([1, 2, 3]);
     assert_eq!(cell.cloned(), [1, 2, 3]);
     ```
     */
-    pub fn cloned(&self) -> T
+    pub fn cloned(&mut self) -> T
     where
         T: Clone,
     {
         <Self as crate::core::Read>::cloned(self)
-    }
-
-    /**
-    Read the contained value and map it
-
-    ```
-    # use hzrd::HzrdCell;
-    #
-    let cell = HzrdCell::new([1, 2, 3]);
-    let mut vec = cell.read_and_map(|arr| arr.as_slice().to_owned());
-    vec.push(4);
-    assert_eq!(vec, [1, 2, 3, 4]);
-    ```
-
-    Note that the output cannot hold a reference to the input (see [`RefHandle`] for why)
-    ```compile_fail
-    # use hzrd::HzrdCell;
-    #
-    let cell = HzrdCell::new(String::from("Hello, world!"));
-    let bytes = cell.read_and_map(|s| s.as_bytes()); // <- tries to hold on to reference
-    # let _ = bytes;
-    ```
-    */
-    pub fn read_and_map<U, F: FnOnce(&T) -> U>(&self, f: F) -> U {
-        <Self as crate::core::Read>::read_and_map(self, f)
-    }
-
-    /// Replace the contained value with a new value, returning the old
-    ///
-    /// This will block until all [`ReadHandle`]s have been dropped
-    #[doc(hidden)]
-    pub fn replace(&self, value: T) -> T {
-        let _ = value;
-        todo!()
-    }
-
-    /// Set the value of the cell, without reclaiming memory
-    ///
-    /// This method may block after the value has been set.
-    pub fn just_set(&self, value: T) {
-        let inner = self.inner();
-        let old_ptr = inner.core.swap(value);
-        inner.retired.lock().unwrap().add(RetiredPtr::new(old_ptr));
     }
 
     /// Reclaim available memory
@@ -221,6 +184,7 @@ impl<T> HzrdCell<T> {
 }
 
 unsafe impl<T: Send> Send for HzrdCell<T> {}
+unsafe impl<T: Sync> Sync for HzrdCell<T> {}
 
 impl<T> Clone for HzrdCell<T> {
     fn clone(&self) -> Self {
@@ -231,12 +195,6 @@ impl<T> Clone for HzrdCell<T> {
             hzrd_ptr,
             marker: PhantomData,
         }
-    }
-}
-
-impl<T: Display> Display for HzrdCell<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.read_and_map(|x| x.fmt(f))
     }
 }
 
@@ -381,7 +339,7 @@ mod tests {
     #[test]
     fn double() {
         let string = String::new();
-        let cell = HzrdCell::new(string);
+        let mut cell = HzrdCell::new(string);
 
         std::thread::scope(|s| {
             let mut cell_1 = HzrdCell::clone(&cell);
@@ -425,7 +383,7 @@ mod tests {
     #[test]
     fn from_boxed() {
         let boxed = Box::new([1, 2, 3]);
-        let cell = HzrdCell::from(boxed);
+        let mut cell = HzrdCell::from(boxed);
         let arr = cell.cloned();
         assert_eq!(arr, [1, 2, 3]);
         cell.set(arr.map(|x| x + 1));

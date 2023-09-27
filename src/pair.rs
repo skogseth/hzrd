@@ -1,8 +1,7 @@
 /*!
 This module contains the [`HzrdWriter`]/[`HzrdReader`] pair.
 
-This pair is the most primitive constructs found in this crate, as they contain no locking for synchronization. A consequence of this is that there is no garbage collection of the containers themselves. [`HzrdReader`] therefore holds a reference to it's [`HzrdWriter`], and is only valid for the lifetime of [`HzrdWriter`]. This makes the
-[`HzrdWriter`]/[`HzrdReader`] pair impractical in many situations. But! They are very good where they shine! In particular, they work excellently together with scoped threads:
+This pair is the most primitive constructs found in this crate, as they contain no locking for synchronization. A consequence of this is that there is no garbage collection of the containers themselves. [`HzrdReader`] therefore holds a reference to it's [`HzrdWriter`], and is only valid for the lifetime of [`HzrdWriter`]. This makes the [`HzrdWriter`]/[`HzrdReader`] pair impractical in many situations. But! They are very good where they shine! In particular, they work excellently together with scoped threads:
 
 ```
 # use std::time::Duration;
@@ -11,7 +10,7 @@ This pair is the most primitive constructs found in this crate, as they contain 
 let ready_writer = HzrdWriter::new(false);
 
 std::thread::scope(|s| {
-    let ready_reader = ready_writer.new_reader();
+    let mut ready_reader = ready_writer.new_reader();
     s.spawn(move || {
         while !ready_reader.get() {
             std::hint::spin_loop();
@@ -69,7 +68,7 @@ impl<T> HzrdWriter<T> {
     # use hzrd::pair::HzrdWriter;
     #
     let writer = HzrdWriter::new(0);
-    let reader = writer.new_reader();
+    let mut reader = writer.new_reader();
     writer.set(1);
     assert_eq!(reader.get(), 1);
     ```
@@ -95,7 +94,7 @@ impl<T> HzrdWriter<T> {
     # use hzrd::pair::HzrdWriter;
     #
     let writer = HzrdWriter::new(0);
-    let reader = writer.new_reader();
+    let mut reader = writer.new_reader();
     writer.set(1);
     assert_eq!(reader.get(), 1);
     ```
@@ -137,7 +136,7 @@ impl<T> Drop for HzrdWriter<T> {
 }
 
 // SAFETY: We good?
-unsafe impl<T> Send for HzrdWriter<T> {}
+unsafe impl<T: Send> Send for HzrdWriter<T> {}
 
 /**
 Container type with the ability to read the contained value.
@@ -149,7 +148,7 @@ pub struct HzrdReader<'writer, T> {
     hzrd_ptr: NonNull<HzrdPtr>,
 }
 
-unsafe impl<T> crate::core::Read for HzrdReader<'_, T> {
+impl<T> crate::core::Read for HzrdReader<'_, T> {
     type T = T;
 
     unsafe fn core(&self) -> &HzrdCore<Self::T> {
@@ -166,14 +165,14 @@ impl<T> HzrdReader<'_, T> {
     /**
     Get a handle holding a reference to the current value of the container
 
-    See [`HzrdCell::read`] for a more detailed description
+    See [`crate::cell::HzrdCell::read`] for a more detailed description
     */
     pub fn read(&mut self) -> RefHandle<T> {
         <Self as crate::core::Read>::read(self)
     }
 
     /// Get the value of the container (requires the type to be [`Copy`])
-    pub fn get(&self) -> T
+    pub fn get(&mut self) -> T
     where
         T: Copy,
     {
@@ -181,18 +180,11 @@ impl<T> HzrdReader<'_, T> {
     }
 
     /// Read the contained value and clone it (requires type to be [`Clone`])
-    pub fn cloned(&self) -> T
+    pub fn cloned(&mut self) -> T
     where
         T: Clone,
     {
         <Self as crate::core::Read>::cloned(self)
-    }
-
-    /// Read the contained value and map it
-    ///
-    /// See [`HzrdCell::read_and_map`] for a more detailed description
-    pub fn read_and_map<U, F: FnOnce(&T) -> U>(&self, f: F) -> U {
-        <Self as crate::core::Read>::read_and_map(self, f)
     }
 }
 
@@ -204,7 +196,8 @@ impl<T> Drop for HzrdReader<'_, T> {
 }
 
 // SAFETY: We good?
-unsafe impl<T> Send for HzrdReader<'_, T> {}
+unsafe impl<T: Send> Send for HzrdReader<'_, T> {}
+unsafe impl<T: Sync> Sync for HzrdReader<'_, T> {}
 
 #[cfg(test)]
 mod tests {
@@ -238,13 +231,13 @@ mod tests {
         std::thread::scope(|s| {
             let mut reader = writer.new_reader();
             s.spawn(move || {
-                let handle = HzrdReader::read(&mut reader);
+                let handle = reader.read();
                 assert!(matches!(*handle, 0 | 1));
             });
 
             let mut reader = writer.new_reader();
             s.spawn(move || {
-                let handle = HzrdReader::read(&mut reader);
+                let handle = reader.read();
                 assert!(matches!(*handle, 0 | 1));
             });
 
@@ -252,7 +245,7 @@ mod tests {
 
             let mut reader = writer.new_reader();
             s.spawn(move || {
-                let handle = HzrdReader::read(&mut reader);
+                let handle = reader.read();
                 assert_eq!(*handle, 1);
             });
         });

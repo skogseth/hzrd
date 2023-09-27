@@ -23,27 +23,20 @@ impl<T> Drop for RefHandle<'_, T> {
     }
 }
 
-/// Function related to reading hazard pointer protected values
-///
-/// # Safety
-/// Type cannot implement `Sync`
-pub unsafe trait Read {
+pub trait Read {
     type T;
 
     unsafe fn core(&self) -> &HzrdCore<Self::T>;
     unsafe fn hzrd_ptr(&self) -> &HzrdPtr;
 
-    /// Reads the contained value and keeps it valid through the hazard pointer
-    ///
-    /// SAFETY:
-    /// - Can only be called by the owner of the hazard pointer
-    /// - The owner cannot call this again until the [`ReadHandle`] has been dropped
-    unsafe fn read_unchecked(&self) -> RefHandle<Self::T> {
-        let core = self.core();
-        let hzrd_ptr = self.hzrd_ptr();
+    fn read(&mut self) -> RefHandle<Self::T> {
+        // SAFETY: Assume they are implemented correctly
+        let core = unsafe { self.core() };
+        let hzrd_ptr = unsafe { self.hzrd_ptr() };
 
         let mut ptr = core.value.load(Acquire);
-        hzrd_ptr.store(ptr);
+        // SAFETY: Non-null ptr
+        unsafe { hzrd_ptr.store(ptr) };
 
         // We now need to keep updating it until it is in a consistent state
         loop {
@@ -51,43 +44,28 @@ pub unsafe trait Read {
             if ptr as usize == hzrd_ptr.get() {
                 break;
             } else {
-                hzrd_ptr.store(ptr);
+                // SAFETY: Non-null ptr
+                unsafe { hzrd_ptr.store(ptr) };
             }
         }
 
         // SAFETY: This pointer is now held valid by the hazard pointer
-        let value = &*ptr;
+        let value = unsafe { &*ptr };
         RefHandle { value, hzrd_ptr }
     }
 
-    fn read(&mut self) -> RefHandle<Self::T> {
-        // SAFETY: We hold a mutable reference
-        unsafe { self.read_unchecked() }
-    }
-
-    fn get(&self) -> Self::T
+    fn get(&mut self) -> Self::T
     where
         Self::T: Copy,
     {
-        // SAFETY: Copy value and drop `RefHandle` immediately
-        unsafe { *self.read_unchecked() }
+        *self.read()
     }
 
-    fn cloned(&self) -> Self::T
+    fn cloned(&mut self) -> Self::T
     where
         Self::T: Clone,
     {
-        // SAFETY: Clone value and drop `RefHandle` immediately
-        unsafe { self.read_unchecked().clone() }
-    }
-
-    fn read_and_map<U, F: FnOnce(&Self::T) -> U>(&self, f: F) -> U {
-        // SAFETY:
-        // - Drop handle at the end of the function
-        // - We don't access the hazard pointer for the rest of the function
-        let value = unsafe { self.read_unchecked() };
-
-        f(&value)
+        self.read().clone()
     }
 }
 
