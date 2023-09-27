@@ -34,13 +34,13 @@ pub trait Read {
         let core = unsafe { self.core() };
         let hzrd_ptr = unsafe { self.hzrd_ptr() };
 
-        let mut ptr = core.value.load(Acquire);
+        let mut ptr = core.value.load(SeqCst);
         // SAFETY: Non-null ptr
         unsafe { hzrd_ptr.store(ptr) };
 
         // We now need to keep updating it until it is in a consistent state
         loop {
-            ptr = core.value.load(Acquire);
+            ptr = core.value.load(SeqCst);
             if ptr as usize == hzrd_ptr.get() {
                 break;
             } else {
@@ -109,7 +109,7 @@ impl HzrdPtr {
     }
 
     pub fn get(&self) -> usize {
-        self.0.load(Acquire)
+        self.0.load(SeqCst)
     }
 
     pub fn is_available(&self) -> bool {
@@ -124,7 +124,7 @@ impl HzrdPtr {
     }
 
     pub unsafe fn store<T>(&self, ptr: *mut T) {
-        self.0.store(ptr as usize, Release);
+        self.0.store(ptr as usize, SeqCst);
     }
 
     pub unsafe fn clear(&self) {

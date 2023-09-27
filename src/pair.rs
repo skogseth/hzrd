@@ -163,6 +163,13 @@ impl<T> crate::core::Read for HzrdReader<'_, T> {
 
 impl<T> HzrdReader<'_, T> {
     /**
+    Construct a reader for the value contained by the given writer
+    */
+    pub fn from_writer<'w>(writer: &'w HzrdWriter<T>) -> HzrdReader<'w, T> {
+        writer.new_reader()
+    }
+
+    /**
     Get a handle holding a reference to the current value of the container
 
     See [`crate::cell::HzrdCell::read`] for a more detailed description
