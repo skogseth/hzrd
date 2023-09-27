@@ -42,12 +42,12 @@ pub unsafe trait Read {
         let core = self.core();
         let hzrd_ptr = self.hzrd_ptr();
 
-        let mut ptr = core.value.load(SeqCst);
+        let mut ptr = core.value.load(Acquire);
         hzrd_ptr.store(ptr);
 
         // We now need to keep updating it until it is in a consistent state
         loop {
-            ptr = core.value.load(SeqCst);
+            ptr = core.value.load(Acquire);
             if ptr as usize == hzrd_ptr.get() {
                 break;
             } else {
@@ -91,6 +91,32 @@ pub unsafe trait Read {
     }
 }
 
+pub struct HzrdCore<T> {
+    value: AtomicPtr<T>,
+}
+
+impl<T> HzrdCore<T> {
+    pub fn new(boxed: Box<T>) -> Self {
+        let value = AtomicPtr::new(Box::into_raw(boxed));
+        Self { value }
+    }
+
+    pub fn swap(&self, value: T) -> NonNull<T> {
+        let new_ptr = Box::into_raw(Box::new(value));
+
+        // SAFETY: Ptr must at this point be non-null
+        let old_raw_ptr = self.value.swap(new_ptr, SeqCst);
+        unsafe { NonNull::new_unchecked(old_raw_ptr) }
+    }
+}
+
+impl<T> Drop for HzrdCore<T> {
+    fn drop(&mut self) {
+        // SAFETY: No more references can be held if this is being dropped
+        let _ = unsafe { Box::from_raw(self.value.load(SeqCst)) };
+    }
+}
+
 fn dummy_addr() -> usize {
     static DUMMY: u8 = 0;
     addr_of!(DUMMY) as usize
@@ -105,30 +131,30 @@ impl HzrdPtr {
     }
 
     pub fn get(&self) -> usize {
-        self.0.load(SeqCst)
+        self.0.load(Acquire)
     }
 
     pub fn is_available(&self) -> bool {
-        self.0.load(SeqCst) == 0
+        self.0.load(Relaxed) == 0
     }
 
     pub fn try_take(&self) -> Option<&Self> {
-        match self.0.compare_exchange(0, dummy_addr(), SeqCst, SeqCst) {
+        match self.0.compare_exchange(0, dummy_addr(), AcqRel, Relaxed) {
             Ok(_) => Some(self),
             Err(_) => None,
         }
     }
 
     pub unsafe fn store<T>(&self, ptr: *mut T) {
-        self.0.store(ptr as usize, SeqCst);
+        self.0.store(ptr as usize, Release);
     }
 
     pub unsafe fn clear(&self) {
-        self.0.store(dummy_addr(), SeqCst);
+        self.0.store(dummy_addr(), Release);
     }
 
     pub unsafe fn free(&self) {
-        self.0.store(0, SeqCst);
+        self.0.store(0, Release);
     }
 }
 
@@ -167,32 +193,6 @@ impl HzrdPtrs {
 impl Default for HzrdPtrs {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub struct HzrdCore<T> {
-    value: AtomicPtr<T>,
-}
-
-impl<T> HzrdCore<T> {
-    pub fn new(boxed: Box<T>) -> Self {
-        let value = AtomicPtr::new(Box::into_raw(boxed));
-        Self { value }
-    }
-
-    pub fn swap(&self, value: T) -> NonNull<T> {
-        let new_ptr = Box::into_raw(Box::new(value));
-
-        // SAFETY: Ptr must at this point be non-null
-        let old_raw_ptr = self.value.swap(new_ptr, SeqCst);
-        unsafe { NonNull::new_unchecked(old_raw_ptr) }
-    }
-}
-
-impl<T> Drop for HzrdCore<T> {
-    fn drop(&mut self) {
-        // SAFETY: No more references can be held if this is being dropped
-        let _ = unsafe { Box::from_raw(self.value.load(SeqCst)) };
     }
 }
 
