@@ -1,6 +1,6 @@
 # Heavily inspired by the setup of Jon Gjengset
 
-name: Rust
+name: build
 
 on:
   push:
@@ -13,7 +13,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    name: ${{ matrix.toolchain }} / build
+    name: ${{ matrix.toolchain }}
     permissions:
       contents: read
     strategy:
@@ -31,20 +31,6 @@ jobs:
       - name: build
         run: cargo build
 
-  fmt:
-    runs-on: ubuntu-latest
-    name: stable / fmt
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: formatting
-        run: cargo fmt --check
-
   msrv:
     runs-on: ubuntu-latest
     # we use a matrix here just because env can't be used in job names
@@ -52,7 +38,7 @@ jobs:
     strategy:
       matrix:
         msrv: ["1.65"]
-    name: ubuntu / ${{ matrix.msrv }}
+    name: stable / ${{ matrix.msrv }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,5 +47,5 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.msrv }}
-      - name: cargo +${{ matrix.msrv }} check
-        run: cargo check
+      - name: cargo +${{ matrix.msrv }} build
+        run: cargo build
