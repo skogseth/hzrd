@@ -1,6 +1,6 @@
 # Heavily inspired by the setup of Jon Gjengset
 
-name: build
+name: test
 
 on:
   push:
@@ -26,24 +26,24 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
-      - name: build
-        run: cargo build
+      - name: test
+        run: cargo test
 
-  msrv:
+  miri:
     runs-on: ubuntu-latest
-    # we use a matrix here just because env can't be used in job names
-    # https://docs.github.com/en/actions/learn-github-actions/contexts#context-availability
-    strategy:
-      matrix:
-        msrv: ["1.65"]
-    name: stable / ${{ matrix.msrv }}
+    name: nightly / miri
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
-      - name: Install ${{ matrix.msrv }}
+      - run: |
+          echo "NIGHTLY=nightly-$(curl -s https://rust-lang.github.io/rustup-components-history/x86_64-unknown-linux-gnu/miri)" >> $GITHUB_ENV
+      - name: Install ${{ env.NIGHTLY }}
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ matrix.msrv }}
-      - name: cargo +${{ matrix.msrv }} build
-        run: cargo build
+          toolchain: ${{ env.NIGHTLY }}
+          components: miri
+      - name: cargo miri test
+        run: cargo miri test
+        env:
+          MIRIFLAGS: ""
