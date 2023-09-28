@@ -1,11 +1,9 @@
 [package]
 name = "hzrd"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-
-[dev-dependencies]
-anyhow = "1.0.72"
+authors = ["Herman Skogseth"]
+rust-version = "1.70"
+description = "Shared mutability containers based on hazard pointers"
+repository = "https://github.com/skogseth/hzrd/"
+license = "MIT"
