@@ -73,3 +73,8 @@ pub mod pair;
 
 pub use crate::cell::HzrdCell;
 pub use crate::core::RefHandle;
+
+mod private {
+    // We want to test the code in the readme
+    #![doc = include_str!("../README.md")]
+}
