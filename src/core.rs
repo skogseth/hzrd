@@ -3,6 +3,8 @@ use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
 
+use crate::utils::SharedCell;
+
 /// Holds a reference to an object protected by a hazard pointer
 pub struct RefHandle<'hzrd, T> {
     value: &'hzrd T,
@@ -136,7 +138,7 @@ impl HzrdPtr {
     }
 }
 
-pub struct HzrdPtrs(LinkedList<HzrdPtr>);
+pub struct HzrdPtrs(LinkedList<SharedCell<HzrdPtr>>);
 
 impl HzrdPtrs {
     pub fn new() -> Self {
@@ -148,23 +150,25 @@ impl HzrdPtrs {
         // Important to only grab shared references to the HzrdPtr's
         // as others may be looking at them
         for node in self.0.iter() {
-            if let Some(hzrd_ptr) = node.try_take() {
+            if let Some(hzrd_ptr) = node.get().try_take() {
                 return NonNull::from(hzrd_ptr);
             }
         }
 
-        self.0.push_back(HzrdPtr::new());
-        let hzrd_ptr = self.0.back().expect("expected non-empty list");
+        self.0.push_back(SharedCell::new(HzrdPtr::new()));
+
+        // SAFETY: We pushed to the list, it must be non-empty
+        let hzrd_ptr = unsafe { self.0.back().unwrap_unchecked().get() };
 
         NonNull::from(hzrd_ptr)
     }
 
     pub fn contains(&self, addr: usize) -> bool {
-        self.0.iter().any(|node| node.get() == addr)
+        self.0.iter().any(|node| node.get().get() == addr)
     }
 
     pub fn all_available(&self) -> bool {
-        self.0.iter().all(|node| node.is_available())
+        self.0.iter().all(|node| node.get().is_available())
     }
 }
 

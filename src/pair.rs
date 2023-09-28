@@ -165,7 +165,7 @@ impl<T> HzrdReader<'_, T> {
     /**
     Construct a reader for the value contained by the given writer
     */
-    pub fn from_writer<'w>(writer: &'w HzrdWriter<T>) -> HzrdReader<'w, T> {
+    pub fn from_writer(writer: &HzrdWriter<T>) -> HzrdReader<T> {
         writer.new_reader()
     }
 
