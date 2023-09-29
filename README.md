@@ -1,8 +1,7 @@
 # hzrd
 
-[![Test Status](https://github.com/skogseth/hzrd/workflows/Tests/badge.svg?event=push)](https://github.com/skogseth/hzrd/actions)
 [![Crate](https://img.shields.io/crates/v/hzrd.svg)](https://crates.io/crates/hzrd)
-[![API](https://docs.rs/hzrd/badge.svg)](https://docs.rs/hzrd)
+[![Documentation](https://docs.rs/hzrd/badge.svg)](https://docs.rs/hzrd)
 
 Provides shared mutability by utilizing hazard pointers for memory reclamation.
 
