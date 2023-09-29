@@ -10,12 +10,12 @@ The core concept of the crate is to trade memory for speed. The containers avoid
 
 The crate currently provides two core interfaces:
 
-- `HzrdCell`
-- `HzrdReader`/`HzrdWriter`
+- HzrdCell
+- HzrdReader/HzrdWriter
 
 ## HzrdCell
 
-`HzrdCell` aims to provide something akin to a multithreaded version of std's `Cell`-type. A basic example:
+HzrdCell aims to provide something akin to a multithreaded version of std's Cell-type. A basic example:
 
 ```rust
 use hzrd::HzrdCell;
@@ -43,10 +43,10 @@ std::thread::spawn(move || {
 });
 ```
 
-The `HzrdCell` provides memory safe, multithreaded, shared mutability. But this isn't all that useful. We often want some sort of synchronization to avoid races (not data races, just general races).
+HzrdCell provides memory safe, multithreaded, shared mutability. But this isn't all that useful. We often want some sort of synchronization to avoid races (not data races, just general races).
 
 ## HzrdReader/HzrdWriter
-One way to avoid race conditions is to allow multiple readers, but only one writer. This is what the `HzrdReader`/`HzrdWriter` pair provides. The readers hold a reference to the writer, no internal synchronization is used, so we need to use scoped threads in this case:
+One way to avoid race conditions is to allow multiple readers, but only one writer. This is what the HzrdReader/HzrdWriter pair provides. The readers hold a reference to the writer, no internal synchronization is used, so we need to use scoped threads in this case:
 
 ```rust
 use hzrd::pair::{HzrdReader, HzrdWriter};
