@@ -1,4 +1,9 @@
 # hzrd
+
+[![Test Status](https://github.com/skogseth/hzrd/workflows/Tests/badge.svg?event=push)](https://github.com/skogseth/hzrd/actions)
+[![Crate](https://img.shields.io/crates/v/hzrd.svg)](https://crates.io/crates/hzrd)
+[![API](https://docs.rs/hzrd/badge.svg)](https://docs.rs/hzrd)
+
 Provides shared mutability by utilizing hazard pointers for memory reclamation.
 
 The core concept of the crate is to trade memory for speed. The containers avoid locking the value, and instead accumulate garbage: Excess data that will need to be freed at a later point. The garbage collection is controlled using hazard pointer. Each reader of the value can hold one reference to the value. If the value of the container is swapped, then the reference they hold is kept valid through their hazard pointer. They can then (at some later point) drop the reference, and the value will be cleaned up _at some point_.
