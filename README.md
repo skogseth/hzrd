@@ -2,6 +2,7 @@
 
 [![Crate](https://img.shields.io/crates/v/hzrd.svg)](https://crates.io/crates/hzrd)
 [![Documentation](https://docs.rs/hzrd/badge.svg)](https://docs.rs/hzrd)
+[![MSRV](https://img.shields.io/badge/rustc-1.65+-lightgray.svg)](https://github.com/skogseth/hzrd#rust-version-requirements)
 
 Provides shared mutability by utilizing hazard pointers for memory reclamation.
 
