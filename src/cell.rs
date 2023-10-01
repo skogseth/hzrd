@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock, TryLockError};
 
 use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs, RefHandle, RetiredPtr, RetiredPtrs};
 use crate::utils::{allocate, free};
@@ -82,7 +82,7 @@ impl<T> HzrdCell<T> {
         let mut retired = inner.retired.lock().unwrap();
         retired.add(RetiredPtr::new(old_ptr));
 
-        let Ok(hzrd_ptrs) = inner.hzrd_ptrs.try_lock() else {
+        let Ok(hzrd_ptrs) = inner.hzrd_ptrs.try_read() else {
             return;
         };
 
@@ -163,16 +163,24 @@ impl<T> HzrdCell<T> {
         <Self as crate::core::Read>::cloned(self)
     }
 
-    /// Reclaim available memory
-    ///
-    /// This method may block
+    /// Reclaim available memory, if possible
     pub fn reclaim(&self) {
-        self.inner().reclaim();
-    }
+        // Try to aquire lock, exit if it is taken
+        let Ok(mut retired) = self.inner().retired.try_lock() else {
+            return;
+        };
 
-    /// Try to reclaim memory, but don't wait for the shared lock to do so
-    pub fn try_reclaim(&self) {
-        self.inner().try_reclaim();
+        // Check if it's empty, no need to move forward otherwise
+        if retired.is_empty() {
+            return;
+        }
+
+        // Try to access the hazard pointers
+        let Ok(hzrd_ptrs) = self.inner().hzrd_ptrs.try_read() else {
+            return;
+        };
+
+        retired.reclaim(&hzrd_ptrs);
     }
 
     /// Get the number of retired values (aka unfreed memory)
@@ -213,14 +221,21 @@ impl<T> From<Box<T>> for HzrdCell<T> {
 
 impl<T> Drop for HzrdCell<T> {
     fn drop(&mut self) {
-        // SAFETY: We scope this so that all references/pointers are dropped before inner is dropped
-        let should_drop_inner = {
-            // SAFETY: The HzrdPtr is exclusively owned by the current cell
-            unsafe { self.hzrd_ptr().free() };
+        // SAFETY: The HzrdPtr is exclusively owned by the current cell
+        unsafe { self.hzrd_ptr().free() };
 
-            // TODO: Handle panic?
-            let hzrd_ptrs = self.inner().hzrd_ptrs.lock().unwrap();
-            hzrd_ptrs.all_available()
+        // SAFETY: Important that all references/pointers are dropped before inner is dropped
+        let should_drop_inner = match self.inner().hzrd_ptrs.try_read() {
+            // If we can read we need to check if all hzrd pointers are freed
+            Ok(hzrd_ptrs) => hzrd_ptrs.all_available(),
+
+            // If the lock would be blocked then it means someone is writing
+            // ergo we are not the last HzrdCell to be dropped.
+            Err(TryLockError::WouldBlock) => false,
+
+            // If the lock has been poisoned we can't know if it's safe to drop.
+            // It's better to leak the data in that case.
+            Err(TryLockError::Poisoned(_)) => false,
         };
 
         if should_drop_inner {
@@ -239,7 +254,7 @@ impl<T> Drop for HzrdCell<T> {
 /// of the number of active `HzrdCell`s (akin to a very inefficent atomic counter).
 struct HzrdCellInner<T> {
     core: HzrdCore<T>,
-    hzrd_ptrs: Mutex<HzrdPtrs>,
+    hzrd_ptrs: RwLock<HzrdPtrs>,
     retired: Mutex<RetiredPtrs<T>>,
 }
 
@@ -247,53 +262,13 @@ impl<T> HzrdCellInner<T> {
     pub fn new(boxed: Box<T>) -> Self {
         Self {
             core: HzrdCore::new(boxed),
-            hzrd_ptrs: Mutex::new(HzrdPtrs::new()),
+            hzrd_ptrs: RwLock::new(HzrdPtrs::new()),
             retired: Mutex::new(RetiredPtrs::new()),
         }
     }
 
     pub fn add(&self) -> NonNull<HzrdPtr> {
-        self.hzrd_ptrs.lock().unwrap().get()
-    }
-
-    /// Reclaim available memory
-    pub fn reclaim(&self) {
-        // Try to aquire lock, exit if it is taken, as this
-        // means someone else is already reclaiming memory!
-        let Ok(mut retired) = self.retired.try_lock() else {
-            return;
-        };
-
-        // Check if it's empty, no need to move forward otherwise
-        if retired.is_empty() {
-            return;
-        }
-
-        // Wait for access to the hazard pointers
-        let hzrd_ptrs = self.hzrd_ptrs.lock().unwrap();
-
-        retired.reclaim(&hzrd_ptrs);
-    }
-
-    /// Try to reclaim memory, but don't wait for the shared lock to do so
-    pub fn try_reclaim(&self) {
-        // Try to aquire lock, exit if it is taken, as this
-        // means someone else is already reclaiming memory!
-        let Ok(mut retired) = self.retired.try_lock() else {
-            return;
-        };
-
-        // Check if it's empty, no need to move forward otherwise
-        if retired.is_empty() {
-            return;
-        }
-
-        // Check if the hazard pointers are available, if not exit
-        let Ok(hzrd_ptrs) = self.hzrd_ptrs.try_lock() else {
-            return;
-        };
-
-        retired.reclaim(&hzrd_ptrs);
+        self.hzrd_ptrs.write().unwrap().get()
     }
 }
 
