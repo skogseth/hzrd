@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use std::sync::{Mutex, RwLock, TryLockError, MutexGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, TryLockError};
 
 use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs, RefHandle, RetiredPtr, RetiredPtrs};
 use crate::utils::{allocate, free};
@@ -309,10 +309,10 @@ impl<T> HzrdLock<T> {
     */
     pub fn lock(&self) -> LockGuard<'_, T> {
         let inner = self.inner();
-        LockGuard { 
-            core: &inner.core, 
-            hzrd_ptr: self.hzrd_ptr(), 
-            hzrd_ptrs: &inner.hzrd_ptrs, 
+        LockGuard {
+            core: &inner.core,
+            hzrd_ptr: self.hzrd_ptr(),
+            hzrd_ptrs: &inner.hzrd_ptrs,
             retired: inner.retired.lock().unwrap(),
         }
     }
