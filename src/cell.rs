@@ -302,6 +302,11 @@ impl<T> HzrdLock<T> {
         HzrdLock::from(Box::new(value))
     }
 
+    /**
+    Lock the inner value for writing (reads are not blocked)
+
+    It the lock is not available this will block.
+    */
     pub fn lock(&self) -> LockGuard<'_, T> {
         let inner = self.inner();
         LockGuard { 
@@ -375,33 +380,6 @@ impl<T> HzrdLock<T> {
         T: Clone,
     {
         <Self as crate::core::Read>::cloned(self)
-    }
-
-    /// Reclaim available memory, if possible
-    pub fn reclaim(&self) {
-        // Try to aquire lock, exit if it is taken
-        let Ok(mut retired) = self.inner().retired.try_lock() else {
-            return;
-        };
-
-        // Check if it's empty, no need to move forward otherwise
-        if retired.is_empty() {
-            return;
-        }
-
-        // Try to access the hazard pointers
-        let Ok(hzrd_ptrs) = self.inner().hzrd_ptrs.try_read() else {
-            return;
-        };
-
-        retired.reclaim(&hzrd_ptrs);
-    }
-
-    /// Get the number of retired values (aka unfreed memory)
-    ///
-    /// This method may block
-    pub fn num_retired(&self) -> usize {
-        self.inner().retired.lock().unwrap().len()
     }
 }
 
