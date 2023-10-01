@@ -183,8 +183,10 @@ impl<T> HzrdCell<T> {
         retired.reclaim(&hzrd_ptrs);
     }
 
-    #[cfg(test)]
-    fn num_retired(&self) -> usize {
+    /// Get the number of retired values (aka unfreed memory)
+    ///
+    /// This method may block
+    pub fn num_retired(&self) -> usize {
         self.inner().retired.lock().unwrap().len()
     }
 }
