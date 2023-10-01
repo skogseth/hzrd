@@ -163,18 +163,24 @@ impl<T> HzrdCell<T> {
         <Self as crate::core::Read>::cloned(self)
     }
 
-    /// Reclaim available memory
-    ///
-    /// This method may block
+    /// Reclaim available memory, if possible
     pub fn reclaim(&self) {
-        self.inner().reclaim();
-    }
+        // Try to aquire lock, exit if it is taken
+        let Ok(mut retired) = self.inner().retired.try_lock() else {
+            return;
+        };
 
-    /// Get the number of retired values (aka unfreed memory)
-    ///
-    /// This method may block
-    pub fn num_retired(&self) -> usize {
-        self.inner().retired.lock().unwrap().len()
+        // Check if it's empty, no need to move forward otherwise
+        if retired.is_empty() {
+            return;
+        }
+
+        // Try to access the hazard pointers
+        let Ok(hzrd_ptrs) = self.inner().hzrd_ptrs.try_read() else {
+            return;
+        };
+
+        retired.reclaim(&hzrd_ptrs);
     }
 }
 
@@ -256,25 +262,6 @@ impl<T> HzrdCellInner<T> {
 
     pub fn add(&self) -> NonNull<HzrdPtr> {
         self.hzrd_ptrs.write().unwrap().get()
-    }
-
-    /// Reclaim available memory
-    pub fn reclaim(&self) {
-        // Try to aquire lock, exit if it is taken, as this
-        // means someone else is already reclaiming memory!
-        let Ok(mut retired) = self.retired.try_lock() else {
-            return;
-        };
-
-        // Check if it's empty, no need to move forward otherwise
-        if retired.is_empty() {
-            return;
-        }
-
-        // Wait for access to the hazard pointers
-        let hzrd_ptrs = self.hzrd_ptrs.read().unwrap();
-
-        retired.reclaim(&hzrd_ptrs);
     }
 }
 
