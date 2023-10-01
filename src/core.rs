@@ -216,6 +216,7 @@ impl<T> RetiredPtrs<T> {
         self.0.is_empty()
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.0.len()
     }

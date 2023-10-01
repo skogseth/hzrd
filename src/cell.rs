@@ -182,6 +182,11 @@ impl<T> HzrdCell<T> {
 
         retired.reclaim(&hzrd_ptrs);
     }
+
+    #[cfg(test)]
+    fn num_retired(&self) -> usize {
+        self.inner().retired.lock().unwrap().len()
+    }
 }
 
 unsafe impl<T: Send> Send for HzrdCell<T> {}
