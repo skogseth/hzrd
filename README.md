@@ -1,16 +1,16 @@
 # hzrd
-Provides shared mutability by utilizing hazard pointers for memory reclamation.
+Provides shared, mutable state by utilizing hazard pointers.
 
 The core concept of the crate is to trade memory for speed. The containers avoid locking the value, and instead accumulate garbage: Excess data that will need to be freed at a later point. The garbage collection is controlled using hazard pointer. Each reader of the value can hold one reference to the value. If the value of the container is swapped, then the reference they hold is kept valid through their hazard pointer. They can then (at some later point) drop the reference, and the value will be cleaned up _at some point_.
 
 The crate currently provides two core interfaces:
 
-- `HzrdCell`
-- `HzrdReader`/`HzrdWriter`
+- HzrdCell
+- HzrdReader/HzrdWriter
 
-## `HzrdCell`
+## HzrdCell
 
-The `HzrdCell` aims to provide something akin to a multithreaded version of std's `Cell`-type. A basic example:
+HzrdCell aims to provide something akin to a multithreaded version of std's Cell-type. A basic example:
 
 ```rust
 use hzrd::HzrdCell;
@@ -38,10 +38,10 @@ std::thread::spawn(move || {
 });
 ```
 
-The `HzrdCell` provides memory safe, multithreaded, shared mutability. But this isn't all that useful. We often want some sort of synchronization to avoid races (not data races, just general races).
+HzrdCell provides memory safe, multithreaded, shared mutability. But this isn't all that useful. We often want some sort of synchronization to avoid races (not data races, just general races).
 
-## `HzrdReader`/`HzrdWriter`
-One way to avoid race conditions is to allow multiple readers, but only one writer. This is what the `HzrdReader`/`HzrdWriter` pair provides. The readers hold a reference to the writer, no internal synchronization is used, so we need to use scoped threads in this case:
+## HzrdReader/HzrdWriter
+One way to avoid race conditions is to allow multiple readers, but only one writer. This is what the HzrdReader/HzrdWriter pair provides. The readers hold a reference to the writer, no internal synchronization is used, so we need to use scoped threads in this case:
 
 ```rust
 use hzrd::pair::{HzrdReader, HzrdWriter};
