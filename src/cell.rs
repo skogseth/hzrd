@@ -248,9 +248,7 @@ impl<T> Drop for HzrdCell<T> {
 }
 
 /**
-Holds a value that can be shared, and mutated, across multiple threads
-
-See the [crate-level documentation](crate) for more details.
+Provides shared, mutable state with lock-free reads & locked writes
 */
 pub struct HzrdLock<T> {
     inner: NonNull<HzrdCellInner<T>>,
@@ -306,8 +304,28 @@ impl<T> HzrdLock<T> {
     Lock the inner value for writing (reads are not blocked)
 
     It the lock is not available this will block.
+
+    ```
+    # use hzrd::HzrdLock;
+    #
+    let mut cell_1 = HzrdLock::new(0);
+    let mut cell_2 = HzrdLock::clone(&cell_1);
+
+    // Lock the cell, other cells would now be blocked if they call `lock()`
+    let mut guard = cell_1.lock();
+    guard.set(10);
+
+    // We can still read the value from other cells, only writing is locked
+    assert_eq!(cell_2.get(), 10);
+
+    // We can also read from the lock
+    let val = guard.get();
+
+    // Which can be used to update the value based on its current state
+    guard.set(val + 1);
+    ```
     */
-    pub fn lock(&self) -> LockGuard<'_, T> {
+    pub fn lock(&mut self) -> LockGuard<'_, T> {
         let inner = self.inner();
         LockGuard {
             core: &inner.core,
