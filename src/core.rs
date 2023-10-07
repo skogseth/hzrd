@@ -75,13 +75,35 @@ pub trait Read {
 
 pub trait Domain {
     fn retire<T>(&self, ptr: NonNull<T>);
-    fn reclaim();
+    fn reclaim(&self);
 }
 
-pub struct DefaultDomain {
+pub struct SharedDomain {
     hzrd: RwLock<HzrdPtrs>,
     retired: Mutex<RetiredPtrs>,
 }
+
+impl SharedDomain {
+    pub const fn new() -> Self {
+        Self {
+            hzrd: RwLock::new(HzrdPtrs::new()),
+            retired: Mutex::new(RetiredPtrs::new()),
+        }
+    }
+}
+
+impl Domain for SharedDomain {
+    fn retire<T>(&self, ptr: NonNull<T>) {
+        let ret_ptr = RetiredPtr::new(ptr);
+        self.retired.lock().unwrap().add(ret_ptr);
+    }
+
+    fn reclaim(&self) {
+        self.retired.lock().unwrap().reclaim(&self.hzrd);
+    }
+}
+
+static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
 
 pub struct HzrdCore<T, D: Domain> {
     value: AtomicPtr<T>,
@@ -91,7 +113,7 @@ pub struct HzrdCore<T, D: Domain> {
 impl<T, D> HzrdCore<T, D> {
     pub fn new(boxed: Box<T>) -> Self {
         let value = AtomicPtr::new(Box::into_raw(boxed));
-        let domain = todo!();
+        let domain: &'static SharedDomain = &GLOBAL_DOMAIN;
         Self { value, domain }
     }
 
