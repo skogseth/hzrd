@@ -25,8 +25,42 @@ std::thread::scope(|s| {
 
 use std::ptr::NonNull;
 
-use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs, RetiredPtr, RetiredPtrs};
+use crate::core::{Domain, HzrdCore, HzrdPtr, HzrdPtrs, RetiredPtr, RetiredPtrs};
 use crate::RefHandle;
+
+pub struct Ptrs {
+    hzrd: HzrdPtrs,
+    retired: RetiredPtrs,
+}
+
+impl Ptrs {
+    pub const fn new() -> Self {
+        Self {
+            hzrd: HzrdPtrs::new(),
+            retired: RetiredPtrs::new(),
+        }
+    }
+}
+
+impl Domain for Ptrs {
+    fn retire<T>(&self, ptr: NonNull<T>) {
+        self.retired.add(ptr);
+    }
+
+    fn reclaim(&self) {
+        self.retired.reclaim(&self.hzrd)
+    }
+}
+
+impl Domain for NonNull<Ptrs> {
+    fn retire<T>(&self, ptr: NonNull<T>) {
+        unsafe { self.as_ref().retire(ptr) }
+    }
+
+    fn reclaim(&self) {
+        unsafe { self.as_ref().reclaim() }
+    }
+}
 
 /**
 Container type with the ability to write to the contained value
@@ -34,13 +68,8 @@ Container type with the ability to write to the contained value
 For in-depth guide see the [module-level documentation](crate::pair).
 */
 pub struct HzrdWriter<T> {
-    core: Box<HzrdCore<T>>,
-    ptrs: NonNull<Ptrs<T>>,
-}
-
-struct Ptrs<T> {
-    hzrd: HzrdPtrs,
-    retired: RetiredPtrs<T>,
+    core: Box<HzrdCore<T, Ptrs>>,
+    ptrs: NonNull<Ptrs>,
 }
 
 impl<T> HzrdWriter<T> {
@@ -100,17 +129,7 @@ impl<T> HzrdWriter<T> {
     ```
     */
     pub fn set(&self, value: T) {
-        let old_ptr = self.core.swap(value);
-
-        // SAFETY:
-        // - Only the writer can access this
-        // - Writer is not Sync, so only this thread can write
-        // - This thread is currently doing this
-        // - The reference is not held alive beyond this function
-        let ptrs = unsafe { &mut *self.ptrs.as_ptr() };
-
-        ptrs.retired.add(RetiredPtr::new(old_ptr));
-        ptrs.retired.reclaim(&ptrs.hzrd);
+        self.core.set(Box::new(value));
     }
 }
 

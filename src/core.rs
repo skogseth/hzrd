@@ -1,7 +1,9 @@
+use std::alloc::Layout;
 use std::collections::LinkedList;
 use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
+use std::sync::{Mutex, RwLock};
 
 use crate::utils::SharedCell;
 
@@ -28,7 +30,7 @@ impl<T> Drop for RefHandle<'_, T> {
 pub trait Read {
     type T;
 
-    unsafe fn core(&self) -> &HzrdCore<Self::T>;
+    unsafe fn core<D>(&self) -> &HzrdCore<Self::T, D>;
     unsafe fn hzrd_ptr(&self) -> &HzrdPtr;
 
     fn read(&mut self) -> RefHandle<Self::T> {
@@ -71,26 +73,48 @@ pub trait Read {
     }
 }
 
-pub struct HzrdCore<T> {
-    value: AtomicPtr<T>,
+pub trait Domain {
+    fn retire<T>(&self, ptr: NonNull<T>);
+    fn reclaim();
 }
 
-impl<T> HzrdCore<T> {
+pub struct DefaultDomain {
+    hzrd: RwLock<HzrdPtrs>,
+    retired: Mutex<RetiredPtrs>,
+}
+
+pub struct HzrdCore<T, D: Domain> {
+    value: AtomicPtr<T>,
+    domain: D,
+}
+
+impl<T, D> HzrdCore<T, D> {
     pub fn new(boxed: Box<T>) -> Self {
         let value = AtomicPtr::new(Box::into_raw(boxed));
-        Self { value }
+        let domain = todo!();
+        Self { value, domain }
     }
 
-    pub fn swap(&self, value: T) -> NonNull<T> {
-        let new_ptr = Box::into_raw(Box::new(value));
+    pub fn new_in(boxed: Box<T>, domain: D) -> Self {
+        let value = AtomicPtr::new(Box::into_raw(boxed));
+        Self { value, domain }
+    }
+
+    fn swap(&self, boxed: Box<T>) -> NonNull<T> {
+        let new_ptr = Box::into_raw(boxed);
 
         // SAFETY: Ptr must at this point be non-null
         let old_raw_ptr = self.value.swap(new_ptr, SeqCst);
         unsafe { NonNull::new_unchecked(old_raw_ptr) }
     }
+
+    pub fn set(&self, boxed: Box<T>) {
+        let old_ptr = self.swap(boxed);
+        self.domain.retire(old_ptr);
+    }
 }
 
-impl<T> Drop for HzrdCore<T> {
+impl<T, D> Drop for HzrdCore<T, D> {
     fn drop(&mut self) {
         // SAFETY: No more references can be held if this is being dropped
         let _ = unsafe { Box::from_raw(self.value.load(SeqCst)) };
@@ -178,33 +202,39 @@ impl Default for HzrdPtrs {
     }
 }
 
-pub struct RetiredPtr<T>(NonNull<T>);
+pub struct RetiredPtr {
+    ptr: NonNull<u8>,
+    layout: Layout,
+}
 
-impl<T> RetiredPtr<T> {
-    pub fn new(ptr: NonNull<T>) -> Self {
-        RetiredPtr(ptr)
+impl RetiredPtr {
+    pub fn new<T>(ptr: NonNull<T>) -> Self {
+        RetiredPtr {
+            ptr: NonNull::from(ptr),
+            layout: Layout::new::<T>(),
+        }
     }
 
-    pub fn as_ptr(&self) -> *mut T {
+    pub fn addr(&self) -> usize {
         self.0.as_ptr()
     }
 }
 
-impl<T> Drop for RetiredPtr<T> {
+impl<T> Drop for RetiredPtr {
     fn drop(&mut self) {
         // SAFETY: No reference to this when dropped
-        unsafe { crate::utils::free(self.0) };
+        unsafe { std::alloc::dealloc(self.0.as_ptr(), self.layout) };
     }
 }
 
-pub struct RetiredPtrs<T>(Vec<RetiredPtr<T>>);
+pub struct RetiredPtrs(Vec<RetiredPtr>);
 
-impl<T> RetiredPtrs<T> {
+impl<T> RetiredPtrs {
     pub fn new() -> Self {
         Self(Vec::new())
     }
 
-    pub fn add(&mut self, val: RetiredPtr<T>) {
+    pub fn add(&mut self, val: RetiredPtr) {
         self.0.push(val);
     }
 
@@ -221,7 +251,7 @@ impl<T> RetiredPtrs<T> {
     }
 }
 
-impl<T> Default for RetiredPtrs<T> {
+impl<T> Default for RetiredPtrs {
     fn default() -> Self {
         Self::new()
     }
