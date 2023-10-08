@@ -27,60 +27,29 @@ impl<T> Drop for RefHandle<'_, T> {
     }
 }
 
-pub trait Read {
-    type T;
-
-    unsafe fn core<D>(&self) -> &HzrdCore<Self::T, D>;
-    unsafe fn hzrd_ptr(&self) -> &HzrdPtr;
-
-    fn read(&mut self) -> RefHandle<Self::T> {
-        // SAFETY: Assume they are implemented correctly
-        let core = unsafe { self.core() };
-        let hzrd_ptr = unsafe { self.hzrd_ptr() };
-
-        let mut ptr = core.value.load(SeqCst);
-        // SAFETY: Non-null ptr
-        unsafe { hzrd_ptr.store(ptr) };
-
-        // We now need to keep updating it until it is in a consistent state
-        loop {
-            ptr = core.value.load(SeqCst);
-            if ptr as usize == hzrd_ptr.get() {
-                break;
-            } else {
-                // SAFETY: Non-null ptr
-                unsafe { hzrd_ptr.store(ptr) };
-            }
-        }
-
-        // SAFETY: This pointer is now held valid by the hazard pointer
-        let value = unsafe { &*ptr };
-        RefHandle { value, hzrd_ptr }
-    }
-
-    fn get(&mut self) -> Self::T
-    where
-        Self::T: Copy,
-    {
-        *self.read()
-    }
-
-    fn cloned(&mut self) -> Self::T
-    where
-        Self::T: Clone,
-    {
-        self.read().clone()
-    }
-}
-
 pub trait Domain {
+    fn hzrd_ptr(&self) -> NonNull<HzrdPtr>;
     fn retire<T>(&self, ptr: NonNull<T>);
     fn reclaim(&self);
 }
 
+impl<D: Domain> Domain for &D {
+    fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
+        (*self).hzrd_ptr()
+    }
+
+    fn retire<T>(&self, ptr: NonNull<T>) {
+        (*self).retire(ptr);
+    }
+
+    fn reclaim(&self) {
+        (*self).reclaim();
+    }
+}
+
 pub struct SharedDomain {
-    hzrd: RwLock<HzrdPtrs>,
-    retired: Mutex<RetiredPtrs>,
+    pub hzrd: RwLock<HzrdPtrs>,
+    pub retired: Mutex<RetiredPtrs>,
 }
 
 impl SharedDomain {
@@ -93,13 +62,33 @@ impl SharedDomain {
 }
 
 impl Domain for SharedDomain {
+    fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
+        self.hzrd.write().unwrap().get()
+    }
+
     fn retire<T>(&self, ptr: NonNull<T>) {
-        let ret_ptr = RetiredPtr::new(ptr);
+        // SAFETY: We can guarantee that ptr is heap-allocated
+        let ret_ptr = unsafe { RetiredPtr::new(ptr) };
         self.retired.lock().unwrap().add(ret_ptr);
     }
 
     fn reclaim(&self) {
-        self.retired.lock().unwrap().reclaim(&self.hzrd);
+        // Try to aquire lock, exit if it is taken
+        let Ok(mut retired_ptrs) = self.retired.try_lock() else {
+            return;
+        };
+
+        // Check if it's empty, no need to move forward otherwise
+        if retired_ptrs.is_empty() {
+            return;
+        }
+
+        // Try to access the hazard pointers
+        let Ok(hzrd_ptrs) = self.hzrd.try_read() else {
+            return;
+        };
+
+        retired_ptrs.reclaim(&hzrd_ptrs);
     }
 }
 
@@ -110,13 +99,16 @@ pub struct HzrdCore<T, D: Domain> {
     domain: D,
 }
 
-impl<T, D> HzrdCore<T, D> {
+#[allow(unused)]
+impl<T> HzrdCore<T, &'static SharedDomain> {
     pub fn new(boxed: Box<T>) -> Self {
         let value = AtomicPtr::new(Box::into_raw(boxed));
         let domain: &'static SharedDomain = &GLOBAL_DOMAIN;
         Self { value, domain }
     }
+}
 
+impl<T, D: Domain> HzrdCore<T, D> {
     pub fn new_in(boxed: Box<T>, domain: D) -> Self {
         let value = AtomicPtr::new(Box::into_raw(boxed));
         Self { value, domain }
@@ -131,17 +123,58 @@ impl<T, D> HzrdCore<T, D> {
     }
 
     pub fn set(&self, boxed: Box<T>) {
+        self.just_set(boxed);
+        self.domain.reclaim();
+    }
+
+    pub fn just_set(&self, boxed: Box<T>) {
         let old_ptr = self.swap(boxed);
         self.domain.retire(old_ptr);
     }
+
+    pub fn reclaim(&self) {
+        self.domain.reclaim();
+    }
+
+    pub fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
+        self.domain.hzrd_ptr()
+    }
+
+    pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr) -> RefHandle<'hzrd, T> {
+        let mut ptr = self.value.load(SeqCst);
+        // SAFETY: Non-null ptr
+        unsafe { hzrd_ptr.store(ptr) };
+
+        // We now need to keep updating it until it is in a consistent state
+        loop {
+            ptr = self.value.load(SeqCst);
+            if ptr as usize == hzrd_ptr.get() {
+                break;
+            } else {
+                // SAFETY: Non-null ptr
+                unsafe { hzrd_ptr.store(ptr) };
+            }
+        }
+
+        // SAFETY: This pointer is now held valid by the hazard pointer
+        let value = unsafe { &*ptr };
+        RefHandle { value, hzrd_ptr }
+    }
+
+    pub unsafe fn domain(&self) -> &D {
+        &self.domain
+    }
 }
 
-impl<T, D> Drop for HzrdCore<T, D> {
+impl<T, D: Domain> Drop for HzrdCore<T, D> {
     fn drop(&mut self) {
         // SAFETY: No more references can be held if this is being dropped
         let _ = unsafe { Box::from_raw(self.value.load(SeqCst)) };
     }
 }
+
+// SAFETY: Is this correct?
+unsafe impl<T: Sync, D: Domain + Sync> Sync for HzrdCore<T, D> {}
 
 fn dummy_addr() -> usize {
     static DUMMY: u8 = 0;
@@ -187,7 +220,7 @@ impl HzrdPtr {
 pub struct HzrdPtrs(LinkedList<SharedCell<HzrdPtr>>);
 
 impl HzrdPtrs {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self(LinkedList::new())
     }
 
@@ -230,29 +263,33 @@ pub struct RetiredPtr {
 }
 
 impl RetiredPtr {
-    pub fn new<T>(ptr: NonNull<T>) -> Self {
+    // SAFETY: Must point to heap-allocated value
+    pub unsafe fn new<T>(ptr: NonNull<T>) -> Self {
         RetiredPtr {
-            ptr: NonNull::from(ptr),
+            ptr: ptr.cast(),
             layout: Layout::new::<T>(),
         }
     }
 
     pub fn addr(&self) -> usize {
-        self.0.as_ptr()
+        self.ptr.as_ptr() as usize
     }
 }
 
-impl<T> Drop for RetiredPtr {
+impl Drop for RetiredPtr {
     fn drop(&mut self) {
-        // SAFETY: No reference to this when dropped
-        unsafe { std::alloc::dealloc(self.0.as_ptr(), self.layout) };
+        // SAFETY: No reference to this when dropped (and always heap allocated)
+        unsafe { std::alloc::dealloc(self.ptr.as_ptr(), self.layout) };
     }
 }
+
+unsafe impl Send for RetiredPtr {}
+unsafe impl Sync for RetiredPtr {}
 
 pub struct RetiredPtrs(Vec<RetiredPtr>);
 
-impl<T> RetiredPtrs {
-    pub fn new() -> Self {
+impl RetiredPtrs {
+    pub const fn new() -> Self {
         Self(Vec::new())
     }
 
@@ -261,7 +298,7 @@ impl<T> RetiredPtrs {
     }
 
     pub fn reclaim(&mut self, hzrd_ptrs: &HzrdPtrs) {
-        self.0.retain(|p| hzrd_ptrs.contains(p.as_ptr() as usize));
+        self.0.retain(|p| hzrd_ptrs.contains(p.addr()));
     }
 
     pub fn is_empty(&self) -> bool {
@@ -273,7 +310,7 @@ impl<T> RetiredPtrs {
     }
 }
 
-impl<T> Default for RetiredPtrs {
+impl Default for RetiredPtrs {
     fn default() -> Self {
         Self::new()
     }
@@ -306,7 +343,7 @@ mod tests {
         let hzrd_ptr = unsafe { hzrd_ptrs.get().as_ref() };
         unsafe { hzrd_ptr.store(value.as_ptr()) };
 
-        retired.add(RetiredPtr::new(value));
+        retired.add(unsafe { RetiredPtr::new(value) });
         assert_eq!(retired.len(), 1);
 
         retired.reclaim(&hzrd_ptrs);

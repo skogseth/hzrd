@@ -1,8 +1,7 @@
-use std::marker::PhantomData;
 use std::ptr::NonNull;
-use std::sync::{Mutex, RwLock, TryLockError};
+use std::sync::TryLockError;
 
-use crate::core::{HzrdCore, HzrdPtr, HzrdPtrs, RefHandle, RetiredPtr, RetiredPtrs};
+use crate::core::{HzrdCore, HzrdPtr, RefHandle, SharedDomain};
 use crate::utils::{allocate, free};
 
 /**
@@ -11,33 +10,20 @@ Holds a value that can be shared, and mutated, across multiple threads
 See the [crate-level documentation](crate) for more details.
 */
 pub struct HzrdCell<T> {
-    inner: NonNull<HzrdCellInner<T>>,
+    core: NonNull<HzrdCore<T, SharedDomain>>,
     hzrd_ptr: NonNull<HzrdPtr>,
-    marker: PhantomData<T>,
 }
 
 // Private methods
 impl<T> HzrdCell<T> {
-    fn inner(&self) -> &HzrdCellInner<T> {
+    fn core(&self) -> &HzrdCore<T, SharedDomain> {
         // SAFETY: Only shared references to this are allowed
-        unsafe { self.inner.as_ref() }
+        unsafe { self.core.as_ref() }
     }
 
     fn hzrd_ptr(&self) -> &HzrdPtr {
         // SAFETY: This pointer is valid for as long as this cell is
         unsafe { self.hzrd_ptr.as_ref() }
-    }
-}
-
-impl<T> crate::core::Read for HzrdCell<T> {
-    type T = T;
-
-    unsafe fn core(&self) -> &HzrdCore<Self::T> {
-        &self.inner().core
-    }
-
-    unsafe fn hzrd_ptr(&self) -> &HzrdPtr {
-        self.hzrd_ptr()
     }
 }
 
@@ -56,8 +42,8 @@ impl<T> HzrdCell<T> {
     # assert_eq!(cell.get(), 0);
     ```
     */
-    pub fn new(value: T) -> Self {
-        HzrdCell::from(Box::new(value))
+    pub fn new(val: T) -> Self {
+        HzrdCell::from(Box::new(val))
     }
 
     /**
@@ -75,27 +61,17 @@ impl<T> HzrdCell<T> {
     # assert_eq!(cell.get(), 1);
     ```
     */
-    pub fn set(&self, value: T) {
-        let inner = self.inner();
-        let old_ptr = inner.core.swap(value);
-
-        let mut retired = inner.retired.lock().unwrap();
-        retired.add(RetiredPtr::new(old_ptr));
-
-        let Ok(hzrd_ptrs) = inner.hzrd_ptrs.try_read() else {
-            return;
-        };
-
-        retired.reclaim(&hzrd_ptrs);
+    pub fn set(&self, val: T) {
+        let boxed = Box::new(val);
+        self.core().set(boxed);
     }
 
     /// Set the value of the cell, without reclaiming memory
     ///
     /// This method may block after the value has been set.
-    pub fn just_set(&self, value: T) {
-        let inner = self.inner();
-        let old_ptr = inner.core.swap(value);
-        inner.retired.lock().unwrap().add(RetiredPtr::new(old_ptr));
+    pub fn just_set(&self, val: T) {
+        let boxed = Box::new(val);
+        self.core().just_set(boxed);
     }
 
     /**
@@ -126,7 +102,9 @@ impl<T> HzrdCell<T> {
     ```
     */
     pub fn read(&mut self) -> RefHandle<T> {
-        <Self as crate::core::Read>::read(self)
+        let core = self.core();
+        let hzrd_ptr = self.hzrd_ptr();
+        unsafe { core.read(hzrd_ptr) }
     }
 
     /**
@@ -143,7 +121,7 @@ impl<T> HzrdCell<T> {
     where
         T: Copy,
     {
-        <Self as crate::core::Read>::get(self)
+        *self.read()
     }
 
     /**
@@ -160,34 +138,23 @@ impl<T> HzrdCell<T> {
     where
         T: Clone,
     {
-        <Self as crate::core::Read>::cloned(self)
+        self.read().clone()
     }
 
     /// Reclaim available memory, if possible
     pub fn reclaim(&self) {
-        // Try to aquire lock, exit if it is taken
-        let Ok(mut retired) = self.inner().retired.try_lock() else {
-            return;
-        };
-
-        // Check if it's empty, no need to move forward otherwise
-        if retired.is_empty() {
-            return;
-        }
-
-        // Try to access the hazard pointers
-        let Ok(hzrd_ptrs) = self.inner().hzrd_ptrs.try_read() else {
-            return;
-        };
-
-        retired.reclaim(&hzrd_ptrs);
+        self.core().reclaim();
     }
 
     /// Get the number of retired values (aka unfreed memory)
     ///
     /// This method may block
     pub fn num_retired(&self) -> usize {
-        self.inner().retired.lock().unwrap().len()
+        unsafe { self.core().domain() }
+            .retired
+            .lock()
+            .unwrap()
+            .len()
     }
 }
 
@@ -196,25 +163,24 @@ unsafe impl<T: Sync> Sync for HzrdCell<T> {}
 
 impl<T> Clone for HzrdCell<T> {
     fn clone(&self) -> Self {
-        let hzrd_ptr = self.inner().add();
+        let hzrd_ptr = self.core().hzrd_ptr();
 
         HzrdCell {
-            inner: self.inner,
+            core: self.core,
             hzrd_ptr,
-            marker: PhantomData,
         }
     }
 }
 
 impl<T> From<Box<T>> for HzrdCell<T> {
     fn from(boxed: Box<T>) -> Self {
-        let inner = HzrdCellInner::new(boxed);
-        let hzrd_ptr = inner.add();
+        let domain = SharedDomain::new();
+        let core = HzrdCore::new_in(boxed, domain);
+        let hzrd_ptr = core.hzrd_ptr();
 
         HzrdCell {
-            inner: allocate(inner),
+            core: allocate(core),
             hzrd_ptr,
-            marker: PhantomData,
         }
     }
 }
@@ -225,7 +191,7 @@ impl<T> Drop for HzrdCell<T> {
         unsafe { self.hzrd_ptr().free() };
 
         // SAFETY: Important that all references/pointers are dropped before inner is dropped
-        let should_drop_inner = match self.inner().hzrd_ptrs.try_read() {
+        let should_drop_inner = match unsafe { self.core().domain() }.hzrd.try_read() {
             // If we can read we need to check if all hzrd pointers are freed
             Ok(hzrd_ptrs) => hzrd_ptrs.all_available(),
 
@@ -242,33 +208,8 @@ impl<T> Drop for HzrdCell<T> {
             // SAFETY:
             // - All other cells have been dropped
             // - No pointers are held to the object
-            unsafe { free(self.inner) };
+            unsafe { free(self.core) };
         }
-    }
-}
-
-/// Shared heap allocated object for `HzrdCell`
-///
-/// The `hzrd_ptrs` keep track of pointers that are in use, and cannot be freed
-/// There is one node per `HzrdCell`, which means the list also keeps track
-/// of the number of active `HzrdCell`s (akin to a very inefficent atomic counter).
-struct HzrdCellInner<T> {
-    core: HzrdCore<T>,
-    hzrd_ptrs: RwLock<HzrdPtrs>,
-    retired: Mutex<RetiredPtrs<T>>,
-}
-
-impl<T> HzrdCellInner<T> {
-    pub fn new(boxed: Box<T>) -> Self {
-        Self {
-            core: HzrdCore::new(boxed),
-            hzrd_ptrs: RwLock::new(HzrdPtrs::new()),
-            retired: Mutex::new(RetiredPtrs::new()),
-        }
-    }
-
-    pub fn add(&self) -> NonNull<HzrdPtr> {
-        self.hzrd_ptrs.write().unwrap().get()
     }
 }
 
