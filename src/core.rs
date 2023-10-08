@@ -2,8 +2,9 @@ use std::alloc::Layout;
 use std::collections::LinkedList;
 use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::utils::SharedCell;
 
@@ -35,19 +36,28 @@ pub unsafe trait Domain {
     fn reclaim(&self);
 }
 
-unsafe impl<D: Domain> Domain for &D {
-    fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
-        (*self).hzrd_ptr()
-    }
+// https://stackoverflow.com/questions/63963544/automatically-derive-traits-implementation-for-arc
+macro_rules! deref_impl {
+    ($($sig:tt)+) => {
+        unsafe impl $($sig)+ {
+            fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
+                (**self).hzrd_ptr()
+            }
 
-    fn retire(&self, ret_ptr: RetiredPtr) {
-        (*self).retire(ret_ptr);
-    }
+            fn retire(&self, ret_ptr: RetiredPtr) {
+                (**self).retire(ret_ptr);
+            }
 
-    fn reclaim(&self) {
-        (*self).reclaim();
-    }
+            fn reclaim(&self) {
+                (**self).reclaim();
+            }
+        }
+    };
 }
+
+deref_impl!(<D: Domain> Domain for &D);
+deref_impl!(<D: Domain> Domain for Rc<D>);
+deref_impl!(<D: Domain> Domain for Arc<D>);
 
 pub struct SharedDomain {
     pub hzrd: RwLock<HzrdPtrs>,
@@ -127,7 +137,8 @@ impl<T, D: Domain> HzrdCore<T, D> {
     }
 
     pub fn set(&self, boxed: Box<T>) {
-        self.just_set(boxed);
+        let old_ptr = self.swap(boxed);
+        self.domain.retire(old_ptr);
         self.domain.reclaim();
     }
 
@@ -357,5 +368,20 @@ mod tests {
         retired.reclaim(&hzrd_ptrs);
         assert_eq!(retired.len(), 0);
         assert!(retired.is_empty());
+    }
+
+    #[test]
+    fn global_domain() {
+        let val_1 = HzrdCore::new(Box::new(0));
+        let val_2 = HzrdCore::new(Box::new(false));
+
+        let hzrd_ptr_1 = val_1.hzrd_ptr();
+        let _handle_1 = unsafe { val_1.read(hzrd_ptr_1.as_ref()) };
+        val_1.set(Box::new(1));
+
+        assert_eq!(val_2.domain().retired.lock().unwrap().len(), 1);
+
+        drop(_handle_1);
+        unsafe { hzrd_ptr_1.as_ref().free() };
     }
 }

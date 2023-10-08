@@ -132,18 +132,9 @@ impl<T> HzrdWriter<T> {
 
 impl<T> From<Box<T>> for HzrdWriter<T> {
     fn from(boxed: Box<T>) -> Self {
-        let ptrs = Ptrs {
-            hzrd: HzrdPtrs::new(),
-            retired: RetiredPtrs::new(),
-        };
-
-        let ptrs = crate::utils::allocate(ptrs);
-        let core = HzrdCore::new_in(boxed, ptrs);
-
-        Self {
-            core: Box::new(core),
-            ptrs,
-        }
+        let ptrs = crate::utils::allocate(Ptrs::new());
+        let core = Box::new(HzrdCore::new_in(boxed, ptrs));
+        Self { core, ptrs }
     }
 }
 
