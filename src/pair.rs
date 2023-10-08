@@ -48,9 +48,8 @@ impl Domain for NonNull<Ptrs> {
         ptrs.hzrd.get()
     }
 
-    fn retire<T>(&self, ptr: NonNull<T>) {
+    fn retire(&self, ret_ptr: RetiredPtr) {
         let ptrs = unsafe { &mut *self.as_ptr() };
-        let ret_ptr = unsafe { RetiredPtr::new(ptr) };
         ptrs.retired.add(ret_ptr);
     }
 

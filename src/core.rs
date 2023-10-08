@@ -29,7 +29,7 @@ impl<T> Drop for RefHandle<'_, T> {
 
 pub trait Domain {
     fn hzrd_ptr(&self) -> NonNull<HzrdPtr>;
-    fn retire<T>(&self, ptr: NonNull<T>);
+    fn retire(&self, ret_ptr: RetiredPtr);
     fn reclaim(&self);
 }
 
@@ -38,8 +38,8 @@ impl<D: Domain> Domain for &D {
         (*self).hzrd_ptr()
     }
 
-    fn retire<T>(&self, ptr: NonNull<T>) {
-        (*self).retire(ptr);
+    fn retire(&self, ret_ptr: RetiredPtr) {
+        (*self).retire(ret_ptr);
     }
 
     fn reclaim(&self) {
@@ -66,9 +66,7 @@ impl Domain for SharedDomain {
         self.hzrd.write().unwrap().get()
     }
 
-    fn retire<T>(&self, ptr: NonNull<T>) {
-        // SAFETY: We can guarantee that ptr is heap-allocated
-        let ret_ptr = unsafe { RetiredPtr::new(ptr) };
+    fn retire(&self, ret_ptr: RetiredPtr) {
         self.retired.lock().unwrap().add(ret_ptr);
     }
 
@@ -114,12 +112,15 @@ impl<T, D: Domain> HzrdCore<T, D> {
         Self { value, domain }
     }
 
-    fn swap(&self, boxed: Box<T>) -> NonNull<T> {
+    fn swap(&self, boxed: Box<T>) -> RetiredPtr {
         let new_ptr = Box::into_raw(boxed);
 
         // SAFETY: Ptr must at this point be non-null
         let old_raw_ptr = self.value.swap(new_ptr, SeqCst);
-        unsafe { NonNull::new_unchecked(old_raw_ptr) }
+        let non_null_ptr = unsafe { NonNull::new_unchecked(old_raw_ptr) };
+
+        // SAFETY: We can guarantee it's pointing to heap-allocated memory
+        unsafe { RetiredPtr::new(non_null_ptr) }
     }
 
     pub fn set(&self, boxed: Box<T>) {
