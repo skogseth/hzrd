@@ -28,8 +28,14 @@ impl<T> Drop for RefHandle<'_, T> {
     }
 }
 
-/// # Safety
-/// Needs to uphold the requirements of a hazard pointer domain
+/**
+A trait describing a hazard pointer domain
+
+A hazard pointer domain contains a set of given hazard pointers. A value protected by hazard pointers belong to a given domain. When the value is swapped the "swapped-out-value" should be retired to the domain associated with the value, such that it is properly cleaned up when there are no more hazard pointers guarding the reclamation of the value.
+
+# Safety
+The list of hazard pointers and retired pointers should, in general, not be mutated outside of these functions (e.g. by removing elements from the list).
+*/
 pub unsafe trait Domain {
     fn hzrd_ptr(&self) -> NonNull<HzrdPtr>;
     fn retire(&self, ret_ptr: RetiredPtr);
@@ -104,6 +110,11 @@ unsafe impl Domain for SharedDomain {
 
 static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
 
+/**
+Holds a value protected by hazard pointers
+
+Each value belongs to a given domain, which contains the set of hazard- and retired pointers protecting the value.
+*/
 pub struct HzrdCore<T, D: Domain> {
     value: AtomicPtr<T>,
     domain: D,
@@ -112,10 +123,7 @@ pub struct HzrdCore<T, D: Domain> {
 #[allow(unused)]
 impl<T> HzrdCore<T, &'static SharedDomain> {
     pub fn new(boxed: Box<T>) -> Self {
-        Self {
-            value: AtomicPtr::new(Box::into_raw(boxed)),
-            domain: &GLOBAL_DOMAIN,
-        }
+        Self::new_in(boxed, &GLOBAL_DOMAIN)
     }
 }
 
