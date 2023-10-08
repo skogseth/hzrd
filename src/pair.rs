@@ -25,7 +25,7 @@ std::thread::scope(|s| {
 
 use std::ptr::NonNull;
 
-use crate::core::{Domain, HzrdCore, HzrdPtr, HzrdPtrs, RetiredPtrs};
+use crate::core::{Domain, HzrdCore, HzrdPtr, HzrdPtrs, RetiredPtr, RetiredPtrs};
 use crate::RefHandle;
 
 pub struct Ptrs {
@@ -42,13 +42,21 @@ impl Ptrs {
     }
 }
 
-impl Domain for Ptrs {
+impl Domain for NonNull<Ptrs> {
+    fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
+        let ptrs = unsafe { &mut *self.as_ptr() };
+        ptrs.hzrd.get()
+    }
+
     fn retire<T>(&self, ptr: NonNull<T>) {
-        self.retired.add(ptr);
+        let ptrs = unsafe { &mut *self.as_ptr() };
+        let ret_ptr = unsafe { RetiredPtr::new(ptr) };
+        ptrs.retired.add(ret_ptr);
     }
 
     fn reclaim(&self) {
-        self.retired.reclaim(&self.hzrd)
+        let ptrs = unsafe { &mut *self.as_ptr() };
+        ptrs.retired.reclaim(&ptrs.hzrd);
     }
 }
 
@@ -58,7 +66,8 @@ Container type with the ability to write to the contained value
 For in-depth guide see the [module-level documentation](crate::pair).
 */
 pub struct HzrdWriter<T> {
-    core: Box<HzrdCore<T, Ptrs>>,
+    core: Box<HzrdCore<T, NonNull<Ptrs>>>,
+    ptrs: NonNull<Ptrs>,
 }
 
 impl<T> HzrdWriter<T> {
@@ -134,6 +143,7 @@ impl<T> From<Box<T>> for HzrdWriter<T> {
 
         Self {
             core: Box::new(core),
+            ptrs,
         }
     }
 }
@@ -154,7 +164,7 @@ Container type with the ability to read the contained value.
 For in-depth guide see the [module-level documentation](crate::pair).
 */
 pub struct HzrdReader<'writer, T> {
-    core: &'writer HzrdCore<T, Ptrs>,
+    core: &'writer HzrdCore<T, NonNull<Ptrs>>,
     hzrd_ptr: NonNull<HzrdPtr>,
 }
 
