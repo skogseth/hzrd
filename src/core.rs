@@ -102,9 +102,10 @@ pub struct HzrdCore<T, D: Domain> {
 #[allow(unused)]
 impl<T> HzrdCore<T, &'static SharedDomain> {
     pub fn new(boxed: Box<T>) -> Self {
-        let value = AtomicPtr::new(Box::into_raw(boxed));
-        let domain: &'static SharedDomain = &GLOBAL_DOMAIN;
-        Self { value, domain }
+        Self {
+            value: AtomicPtr::new(Box::into_raw(boxed)),
+            domain: &GLOBAL_DOMAIN,
+        }
     }
 }
 

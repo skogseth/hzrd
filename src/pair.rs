@@ -28,7 +28,7 @@ use std::ptr::NonNull;
 use crate::core::{Domain, HzrdCore, HzrdPtr, HzrdPtrs, RetiredPtr, RetiredPtrs};
 use crate::RefHandle;
 
-pub struct Ptrs {
+struct Ptrs {
     hzrd: HzrdPtrs,
     retired: RetiredPtrs,
 }
