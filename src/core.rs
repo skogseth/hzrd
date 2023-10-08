@@ -27,13 +27,15 @@ impl<T> Drop for RefHandle<'_, T> {
     }
 }
 
-pub trait Domain {
+/// # Safety
+/// Needs to uphold the requirements of a hazard pointer domain
+pub unsafe trait Domain {
     fn hzrd_ptr(&self) -> NonNull<HzrdPtr>;
     fn retire(&self, ret_ptr: RetiredPtr);
     fn reclaim(&self);
 }
 
-impl<D: Domain> Domain for &D {
+unsafe impl<D: Domain> Domain for &D {
     fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
         (*self).hzrd_ptr()
     }
@@ -61,7 +63,7 @@ impl SharedDomain {
     }
 }
 
-impl Domain for SharedDomain {
+unsafe impl Domain for SharedDomain {
     fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
         self.hzrd.write().unwrap().get()
     }
@@ -162,7 +164,7 @@ impl<T, D: Domain> HzrdCore<T, D> {
         RefHandle { value, hzrd_ptr }
     }
 
-    pub unsafe fn domain(&self) -> &D {
+    pub fn domain(&self) -> &D {
         &self.domain
     }
 }

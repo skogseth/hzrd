@@ -150,11 +150,7 @@ impl<T> HzrdCell<T> {
     ///
     /// This method may block
     pub fn num_retired(&self) -> usize {
-        unsafe { self.core().domain() }
-            .retired
-            .lock()
-            .unwrap()
-            .len()
+        self.core().domain().retired.lock().unwrap().len()
     }
 }
 
@@ -191,7 +187,7 @@ impl<T> Drop for HzrdCell<T> {
         unsafe { self.hzrd_ptr().free() };
 
         // SAFETY: Important that all references/pointers are dropped before inner is dropped
-        let should_drop_inner = match unsafe { self.core().domain() }.hzrd.try_read() {
+        let should_drop_inner = match self.core().domain().hzrd.try_read() {
             // If we can read we need to check if all hzrd pointers are freed
             Ok(hzrd_ptrs) => hzrd_ptrs.all_available(),
 

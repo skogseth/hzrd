@@ -42,7 +42,7 @@ impl Ptrs {
     }
 }
 
-impl Domain for NonNull<Ptrs> {
+unsafe impl Domain for NonNull<Ptrs> {
     fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
         let ptrs = unsafe { &mut *self.as_ptr() };
         ptrs.hzrd.get()
