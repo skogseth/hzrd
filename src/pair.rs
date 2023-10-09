@@ -48,13 +48,20 @@ unsafe impl Domain for NonNull<Ptrs> {
         ptrs.hzrd.get()
     }
 
-    fn retire(&self, ret_ptr: RetiredPtr) {
+    fn just_retire(&self, ret_ptr: RetiredPtr) {
         let ptrs = unsafe { &mut *self.as_ptr() };
         ptrs.retired.add(ret_ptr);
     }
 
     fn reclaim(&self) {
         let ptrs = unsafe { &mut *self.as_ptr() };
+        ptrs.retired.reclaim(&ptrs.hzrd);
+    }
+
+    // Override this for performance?
+    fn retire(&self, ret_ptr: RetiredPtr) {
+        let ptrs = unsafe { &mut *self.as_ptr() };
+        ptrs.retired.add(ret_ptr);
         ptrs.retired.reclaim(&ptrs.hzrd);
     }
 }
