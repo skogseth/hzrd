@@ -23,6 +23,7 @@ std::thread::scope(|s| {
 ```
 */
 
+use std::cell::UnsafeCell;
 use std::ptr::NonNull;
 
 use crate::core::{Domain, HzrdCore, HzrdPtr, HzrdPtrs, RetiredPtr, RetiredPtrs};
@@ -42,25 +43,38 @@ impl Ptrs {
     }
 }
 
-unsafe impl Domain for NonNull<Ptrs> {
+/// This domain assumes that any access to the domain is unique and valid
+struct UnsafeDomain(UnsafeCell<Ptrs>);
+
+impl UnsafeDomain {
+    /// Simply constructing this is unsafe, as the type unsafely implements domain
+    ///
+    /// # Safety
+    /// Creating this requires that all uses of the object as a domain are safe and valid
+    const unsafe fn new() -> Self {
+        Self(UnsafeCell::new(Ptrs::new()))
+    }
+}
+
+unsafe impl Domain for UnsafeDomain {
     fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
-        let ptrs = unsafe { &mut *self.as_ptr() };
+        let ptrs = unsafe { &mut *self.0.get() };
         ptrs.hzrd.get()
     }
 
     fn just_retire(&self, ret_ptr: RetiredPtr) {
-        let ptrs = unsafe { &mut *self.as_ptr() };
+        let ptrs = unsafe { &mut *self.0.get() };
         ptrs.retired.add(ret_ptr);
     }
 
     fn reclaim(&self) {
-        let ptrs = unsafe { &mut *self.as_ptr() };
+        let ptrs = unsafe { &mut *self.0.get() };
         ptrs.retired.reclaim(&ptrs.hzrd);
     }
 
     // Override this for performance?
     fn retire(&self, ret_ptr: RetiredPtr) {
-        let ptrs = unsafe { &mut *self.as_ptr() };
+        let ptrs = unsafe { &mut *self.0.get() };
         ptrs.retired.add(ret_ptr);
         ptrs.retired.reclaim(&ptrs.hzrd);
     }
@@ -72,8 +86,7 @@ Container type with the ability to write to the contained value
 For in-depth guide see the [module-level documentation](crate::pair).
 */
 pub struct HzrdWriter<T> {
-    core: Box<HzrdCore<T, NonNull<Ptrs>>>,
-    ptrs: NonNull<Ptrs>,
+    core: Box<HzrdCore<T, UnsafeDomain>>,
 }
 
 impl<T> HzrdWriter<T> {
@@ -107,16 +120,10 @@ impl<T> HzrdWriter<T> {
     ```
     */
     pub fn new_reader(&self) -> HzrdReader<T> {
-        // SAFETY:
-        // - Only the writer can access this
-        // - Writer is not Sync, so only this thread can write
-        // - This thread is currently doing this
-        // - The reference is not held alive beyond this function
-        let ptrs = unsafe { &mut *self.ptrs.as_ptr() };
-
+        let hzrd_ptr = self.core.hzrd_ptr();
         HzrdReader {
             core: &self.core,
-            hzrd_ptr: ptrs.hzrd.get(),
+            hzrd_ptr,
         }
     }
 
@@ -139,16 +146,9 @@ impl<T> HzrdWriter<T> {
 
 impl<T> From<Box<T>> for HzrdWriter<T> {
     fn from(boxed: Box<T>) -> Self {
-        let ptrs = crate::utils::allocate(Ptrs::new());
-        let core = Box::new(HzrdCore::new_in(boxed, ptrs));
-        Self { core, ptrs }
-    }
-}
-
-impl<T> Drop for HzrdWriter<T> {
-    fn drop(&mut self) {
-        // SAFETY: Noone can access this anymore
-        unsafe { crate::utils::free(self.ptrs) }
+        let domain = unsafe { UnsafeDomain::new() };
+        let core = Box::new(HzrdCore::new_in(boxed, domain));
+        Self { core }
     }
 }
 
@@ -161,7 +161,7 @@ Container type with the ability to read the contained value.
 For in-depth guide see the [module-level documentation](crate::pair).
 */
 pub struct HzrdReader<'writer, T> {
-    core: &'writer HzrdCore<T, NonNull<Ptrs>>,
+    core: &'writer HzrdCore<T, UnsafeDomain>,
     hzrd_ptr: NonNull<HzrdPtr>,
 }
 
