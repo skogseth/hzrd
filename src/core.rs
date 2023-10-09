@@ -37,11 +37,23 @@ A hazard pointer domain contains a set of given hazard pointers. A value protect
 The list of hazard pointers and retired pointers should, in general, not be mutated outside of these functions (e.g. by removing elements from the list).
 */
 pub unsafe trait Domain {
+    /**
+    Get a new hazard pointer in the given domain
+
+    This function may allocate a new hazard pointer in the domain.
+    This should, ideally, only happen if there are none available.
+    */
     fn hzrd_ptr(&self) -> NonNull<HzrdPtr>;
+
+    /// Retire the provided retired-pointer, but don't reclaim memory
     fn just_retire(&self, ret_ptr: RetiredPtr);
+
+    /// Reclaim all "reclaimable" memory in the given domain
     fn reclaim(&self);
 
-    // Provided (and overridable) methods
+    // -------------------------------------
+
+    /// Retire the provided retired-pointer and reclaim all "reclaimable" memory
     fn retire(&self, ret_ptr: RetiredPtr) {
         self.just_retire(ret_ptr);
         self.reclaim();
