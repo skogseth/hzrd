@@ -43,9 +43,14 @@ impl Ptrs {
     }
 }
 
+/// This domain assumes that any access to the domain is unique and valid
 struct UnsafeDomain(UnsafeCell<Ptrs>);
 
 impl UnsafeDomain {
+    /// Simply constructing this is unsafe, as the type unsafely implements domain
+    ///
+    /// # Safety
+    /// Creating this requires that all uses of the object as a domain are safe and valid
     const unsafe fn new() -> Self {
         Self(UnsafeCell::new(Ptrs::new()))
     }
