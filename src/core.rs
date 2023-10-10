@@ -37,9 +37,27 @@ A hazard pointer domain contains a set of given hazard pointers. A value protect
 The list of hazard pointers and retired pointers should, in general, not be mutated outside of these functions (e.g. by removing elements from the list).
 */
 pub unsafe trait Domain {
+    /**
+    Get a new hazard pointer in the given domain
+
+    This function may allocate a new hazard pointer in the domain.
+    This should, ideally, only happen if there are none available.
+    */
     fn hzrd_ptr(&self) -> NonNull<HzrdPtr>;
-    fn retire(&self, ret_ptr: RetiredPtr);
+
+    /// Retire the provided retired-pointer, but don't reclaim memory
+    fn just_retire(&self, ret_ptr: RetiredPtr);
+
+    /// Reclaim all "reclaimable" memory in the given domain
     fn reclaim(&self);
+
+    // -------------------------------------
+
+    /// Retire the provided retired-pointer and reclaim all "reclaimable" memory
+    fn retire(&self, ret_ptr: RetiredPtr) {
+        self.just_retire(ret_ptr);
+        self.reclaim();
+    }
 }
 
 // https://stackoverflow.com/questions/63963544/automatically-derive-traits-implementation-for-arc
@@ -50,8 +68,8 @@ macro_rules! deref_impl {
                 (**self).hzrd_ptr()
             }
 
-            fn retire(&self, ret_ptr: RetiredPtr) {
-                (**self).retire(ret_ptr);
+            fn just_retire(&self, ret_ptr: RetiredPtr) {
+                (**self).just_retire(ret_ptr);
             }
 
             fn reclaim(&self) {
@@ -84,7 +102,7 @@ unsafe impl Domain for SharedDomain {
         self.hzrd.write().unwrap().get()
     }
 
-    fn retire(&self, ret_ptr: RetiredPtr) {
+    fn just_retire(&self, ret_ptr: RetiredPtr) {
         self.retired.lock().unwrap().add(ret_ptr);
     }
 
@@ -93,6 +111,26 @@ unsafe impl Domain for SharedDomain {
         let Ok(mut retired_ptrs) = self.retired.try_lock() else {
             return;
         };
+
+        // Check if it's empty, no need to move forward otherwise
+        if retired_ptrs.is_empty() {
+            return;
+        }
+
+        // Try to access the hazard pointers
+        let Ok(hzrd_ptrs) = self.hzrd.try_read() else {
+            return;
+        };
+
+        retired_ptrs.reclaim(&hzrd_ptrs);
+    }
+
+    fn retire(&self, ret_ptr: RetiredPtr) {
+        // Grab the lock to retired pointers
+        let mut retired_ptrs = self.retired.lock().unwrap();
+
+        // And retire the given pointer
+        retired_ptrs.add(ret_ptr);
 
         // Check if it's empty, no need to move forward otherwise
         if retired_ptrs.is_empty() {
@@ -147,12 +185,11 @@ impl<T, D: Domain> HzrdCore<T, D> {
     pub fn set(&self, boxed: Box<T>) {
         let old_ptr = self.swap(boxed);
         self.domain.retire(old_ptr);
-        self.domain.reclaim();
     }
 
     pub fn just_set(&self, boxed: Box<T>) {
         let old_ptr = self.swap(boxed);
-        self.domain.retire(old_ptr);
+        self.domain.just_retire(old_ptr);
     }
 
     pub fn reclaim(&self) {

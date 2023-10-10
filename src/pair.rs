@@ -62,13 +62,20 @@ unsafe impl Domain for UnsafeDomain {
         ptrs.hzrd.get()
     }
 
-    fn retire(&self, ret_ptr: RetiredPtr) {
+    fn just_retire(&self, ret_ptr: RetiredPtr) {
         let ptrs = unsafe { &mut *self.0.get() };
         ptrs.retired.add(ret_ptr);
     }
 
     fn reclaim(&self) {
         let ptrs = unsafe { &mut *self.0.get() };
+        ptrs.retired.reclaim(&ptrs.hzrd);
+    }
+
+    // Override this for performance?
+    fn retire(&self, ret_ptr: RetiredPtr) {
+        let ptrs = unsafe { &mut *self.0.get() };
+        ptrs.retired.add(ret_ptr);
         ptrs.retired.reclaim(&ptrs.hzrd);
     }
 }
