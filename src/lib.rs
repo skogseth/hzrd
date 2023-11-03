@@ -71,7 +71,7 @@ mod utils;
 
 pub mod pair;
 
-pub use crate::cell::HzrdCell;
+pub use crate::cell::{HzrdCell, HzrdLock};
 pub use crate::core::RefHandle;
 
 mod private {
