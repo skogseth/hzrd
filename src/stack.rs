@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicPtr, Ordering::*};
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicPtr, Ordering::*};
 
 pub struct Node<T> {
     val: T,
@@ -28,20 +28,31 @@ impl<T> SharedStack<T> {
         loop {
             let old_top = self.top.load(Acquire);
             unsafe { &*node }.next.store(old_top, Release);
-            if self.top.compare_exchange(old_top, node, AcqRel, Relaxed).is_ok() {
+            if self
+                .top
+                .compare_exchange(old_top, node, AcqRel, Relaxed)
+                .is_ok()
+            {
                 break;
             }
         }
         unsafe { &(*node).val }
     }
 
+    #[allow(clippy::needless_lifetimes)]
     pub fn iter<'t>(&'t self) -> Iter<'t, T> {
         let next = AtomicPtr::new(self.top.load(Acquire));
-        Iter { next, _marker: PhantomData }
+        Iter {
+            next,
+            _marker: PhantomData,
+        }
     }
 
     #[cfg(test)]
-    fn to_vec(&self) -> Vec<T> where T: Copy {
+    fn to_vec(&self) -> Vec<T>
+    where
+        T: Copy,
+    {
         self.iter().copied().collect()
     }
 }
@@ -104,7 +115,7 @@ mod tests {
             s.spawn(|| {
                 stack.push(1);
                 stack.push(2);
-            }); 
+            });
 
             s.spawn(|| {
                 stack.push(3);
