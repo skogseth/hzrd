@@ -28,7 +28,7 @@ impl<T> SharedStack<T> {
         loop {
             let old_top = self.top.load(Acquire);
             unsafe { &*node }.next.store(old_top, Release);
-            if self.top.compare_exchange(old_top, node, SeqCst, Relaxed).is_ok() {
+            if self.top.compare_exchange(old_top, node, AcqRel, Relaxed).is_ok() {
                 break;
             }
         }
@@ -36,7 +36,7 @@ impl<T> SharedStack<T> {
     }
 
     pub fn iter<'t>(&'t self) -> Iter<'t, T> {
-        let next = AtomicPtr::new(self.top.load(Relaxed));
+        let next = AtomicPtr::new(self.top.load(Acquire));
         Iter { next, _marker: PhantomData }
     }
 
@@ -54,9 +54,9 @@ impl<T> Default for SharedStack<T> {
 
 impl<T> Drop for SharedStack<T> {
     fn drop(&mut self) {
-        let mut current = self.top.load(SeqCst);
+        let mut current = self.top.load(Relaxed);
         while !current.is_null() {
-            let next = unsafe { (*current).next.load(SeqCst) };
+            let next = unsafe { (*current).next.load(Relaxed) };
             unsafe { drop(Box::from_raw(current)) };
             current = next;
         }
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn stacks_first_test() {
-        let mut stack = SharedStack::new();
+        let stack = SharedStack::new();
         stack.push(0);
         stack.push(1);
         stack.push(2);
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn multiple_threads() {
-        let mut stack = SharedStack::new();
+        let stack = SharedStack::new();
 
         std::thread::scope(|s| {
             s.spawn(|| {

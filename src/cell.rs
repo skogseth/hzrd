@@ -186,7 +186,10 @@ impl<T> Drop for HzrdCell<T> {
         unsafe { self.hzrd_ptr().free() };
 
         // SAFETY: Important that all references/pointers are dropped before inner is dropped
-        let should_drop_inner = self.core().domain().hzrd.all_available();
+        let should_drop_inner = match self.core().domain().retired.lock() {
+            Ok(_guard) => self.core().domain().hzrd.all_available(),
+            Err(_) => false,
+        };
 
         if should_drop_inner {
             // SAFETY:

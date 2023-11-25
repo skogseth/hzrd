@@ -383,7 +383,7 @@ mod tests {
         let value = Box::into_raw(Box::new([1, 2, 3]));
         let value = unsafe { NonNull::new_unchecked(value) };
 
-        let mut hzrd_ptrs = HzrdPtrs::new();
+        let hzrd_ptrs = HzrdPtrs::new();
         let mut retired = RetiredPtrs::new();
 
         let hzrd_ptr = unsafe { hzrd_ptrs.get().as_ref() };
