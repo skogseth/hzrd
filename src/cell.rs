@@ -153,8 +153,8 @@ impl<T> HzrdCell<T> {
     }
 }
 
-unsafe impl<T: Send> Send for HzrdCell<T> {}
-unsafe impl<T: Sync> Sync for HzrdCell<T> {}
+unsafe impl<T: Send + Sync> Send for HzrdCell<T> {}
+unsafe impl<T: Send + Sync> Sync for HzrdCell<T> {}
 
 impl<T> Clone for HzrdCell<T> {
     fn clone(&self) -> Self {
