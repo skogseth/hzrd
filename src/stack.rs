@@ -52,6 +52,17 @@ impl<T> Default for SharedStack<T> {
     }
 }
 
+impl<T> Drop for SharedStack<T> {
+    fn drop(&mut self) {
+        let mut current = self.top.load(SeqCst);
+        while !current.is_null() {
+            let next = unsafe { (*current).next.load(SeqCst) };
+            unsafe { drop(Box::from_raw(current)) };
+            current = next;
+        }
+    }
+}
+
 pub struct Iter<'t, T> {
     next: AtomicPtr<Node<T>>,
     _marker: PhantomData<&'t SharedStack<T>>,
@@ -69,12 +80,6 @@ impl<'t, T> Iterator for Iter<'t, T> {
         let new_next = next.load(Acquire);
         self.next.store(new_next, Release);
         Some(val)
-    }
-}
-
-impl<T> Drop for SharedStack<T> {
-    fn drop(&mut self) {
-        todo!()
     }
 }
 
