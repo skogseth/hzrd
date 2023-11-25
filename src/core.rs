@@ -142,19 +142,19 @@ Holds a value protected by hazard pointers
 
 Each value belongs to a given domain, which contains the set of hazard- and retired pointers protecting the value.
 */
-pub struct HzrdCore<T, D: Domain> {
+pub struct HzrdValue<T, D: Domain> {
     value: AtomicPtr<T>,
     domain: D,
 }
 
 #[allow(unused)]
-impl<T> HzrdCore<T, &'static SharedDomain> {
+impl<T> HzrdValue<T, &'static SharedDomain> {
     pub fn new(boxed: Box<T>) -> Self {
         Self::new_in(boxed, &GLOBAL_DOMAIN)
     }
 }
 
-impl<T, D: Domain> HzrdCore<T, D> {
+impl<T, D: Domain> HzrdValue<T, D> {
     pub fn new_in(boxed: Box<T>, domain: D) -> Self {
         let value = AtomicPtr::new(Box::into_raw(boxed));
         Self { value, domain }
@@ -215,7 +215,7 @@ impl<T, D: Domain> HzrdCore<T, D> {
     }
 }
 
-impl<T, D: Domain> Drop for HzrdCore<T, D> {
+impl<T, D: Domain> Drop for HzrdValue<T, D> {
     fn drop(&mut self) {
         // SAFETY: No more references can be held if this is being dropped
         let _ = unsafe { Box::from_raw(self.value.load(SeqCst)) };
@@ -223,7 +223,8 @@ impl<T, D: Domain> Drop for HzrdCore<T, D> {
 }
 
 // SAFETY: Is this correct?
-unsafe impl<T: Sync, D: Domain + Sync> Sync for HzrdCore<T, D> {}
+unsafe impl<T: Send + Sync, D: Domain + Send + Sync> Send for HzrdValue<T, D> {}
+unsafe impl<T: Send + Sync, D: Domain + Send + Sync> Sync for HzrdValue<T, D> {}
 
 fn dummy_addr() -> usize {
     static DUMMY: u8 = 0;
@@ -403,8 +404,8 @@ mod tests {
 
     #[test]
     fn global_domain() {
-        let val_1 = HzrdCore::new(Box::new(0));
-        let val_2 = HzrdCore::new(Box::new(false));
+        let val_1 = HzrdValue::new(Box::new(0));
+        let val_2 = HzrdValue::new(Box::new(false));
 
         let hzrd_ptr_1 = val_1.hzrd_ptr();
         let _handle_1 = unsafe { val_1.read(hzrd_ptr_1.as_ref()) };

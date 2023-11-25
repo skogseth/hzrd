@@ -26,7 +26,7 @@ std::thread::scope(|s| {
 use std::cell::UnsafeCell;
 use std::ptr::NonNull;
 
-use crate::core::{Domain, HzrdCore, HzrdPtr, HzrdPtrs, RetiredPtr, RetiredPtrs};
+use crate::core::{Domain, HzrdPtr, HzrdPtrs, HzrdValue, RetiredPtr, RetiredPtrs};
 use crate::RefHandle;
 
 struct Ptrs {
@@ -86,7 +86,7 @@ Container type with the ability to write to the contained value
 For in-depth guide see the [module-level documentation](crate::pair).
 */
 pub struct HzrdWriter<T> {
-    core: Box<HzrdCore<T, UnsafeDomain>>,
+    core: Box<HzrdValue<T, UnsafeDomain>>,
 }
 
 impl<T> HzrdWriter<T> {
@@ -147,7 +147,7 @@ impl<T> HzrdWriter<T> {
 impl<T> From<Box<T>> for HzrdWriter<T> {
     fn from(boxed: Box<T>) -> Self {
         let domain = unsafe { UnsafeDomain::new() };
-        let core = Box::new(HzrdCore::new_in(boxed, domain));
+        let core = Box::new(HzrdValue::new_in(boxed, domain));
         Self { core }
     }
 }
@@ -161,7 +161,7 @@ Container type with the ability to read the contained value.
 For in-depth guide see the [module-level documentation](crate::pair).
 */
 pub struct HzrdReader<'writer, T> {
-    core: &'writer HzrdCore<T, UnsafeDomain>,
+    core: &'writer HzrdValue<T, UnsafeDomain>,
     hzrd_ptr: NonNull<HzrdPtr>,
 }
 

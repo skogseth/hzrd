@@ -1,6 +1,6 @@
 use std::ptr::NonNull;
 
-use crate::core::{HzrdCore, HzrdPtr, RefHandle, SharedDomain};
+use crate::core::{HzrdPtr, HzrdValue, RefHandle, SharedDomain};
 use crate::utils::{allocate, free};
 
 /**
@@ -9,13 +9,13 @@ Holds a value that can be shared, and mutated, across multiple threads
 See the [crate-level documentation](crate) for more details.
 */
 pub struct HzrdCell<T> {
-    core: NonNull<HzrdCore<T, SharedDomain>>,
+    core: NonNull<HzrdValue<T, SharedDomain>>,
     hzrd_ptr: NonNull<HzrdPtr>,
 }
 
 // Private methods
 impl<T> HzrdCell<T> {
-    fn core(&self) -> &HzrdCore<T, SharedDomain> {
+    fn core(&self) -> &HzrdValue<T, SharedDomain> {
         // SAFETY: Only shared references to this are allowed
         unsafe { self.core.as_ref() }
     }
@@ -170,7 +170,7 @@ impl<T> Clone for HzrdCell<T> {
 impl<T> From<Box<T>> for HzrdCell<T> {
     fn from(boxed: Box<T>) -> Self {
         let domain = SharedDomain::new();
-        let core = HzrdCore::new_in(boxed, domain);
+        let core = HzrdValue::new_in(boxed, domain);
         let hzrd_ptr = core.hzrd_ptr();
 
         HzrdCell {
