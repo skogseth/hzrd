@@ -86,7 +86,7 @@ Container type with the ability to write to the contained value
 For in-depth guide see the [module-level documentation](crate::pair).
 */
 pub struct HzrdWriter<T> {
-    core: Box<HzrdValue<T, UnsafeDomain>>,
+    value: Box<HzrdValue<T, UnsafeDomain>>,
 }
 
 impl<T> HzrdWriter<T> {
@@ -120,9 +120,9 @@ impl<T> HzrdWriter<T> {
     ```
     */
     pub fn new_reader(&self) -> HzrdReader<T> {
-        let hzrd_ptr = self.core.hzrd_ptr();
+        let hzrd_ptr = self.value.hzrd_ptr();
         HzrdReader {
-            core: &self.core,
+            value: &self.value,
             hzrd_ptr,
         }
     }
@@ -140,15 +140,15 @@ impl<T> HzrdWriter<T> {
     ```
     */
     pub fn set(&self, value: T) {
-        self.core.set(Box::new(value));
+        self.value.set(Box::new(value));
     }
 }
 
 impl<T> From<Box<T>> for HzrdWriter<T> {
     fn from(boxed: Box<T>) -> Self {
         let domain = unsafe { UnsafeDomain::new() };
-        let core = Box::new(HzrdValue::new_in(boxed, domain));
-        Self { core }
+        let value = Box::new(HzrdValue::new_in(boxed, domain));
+        Self { value }
     }
 }
 
@@ -161,7 +161,7 @@ Container type with the ability to read the contained value.
 For in-depth guide see the [module-level documentation](crate::pair).
 */
 pub struct HzrdReader<'writer, T> {
-    core: &'writer HzrdValue<T, UnsafeDomain>,
+    value: &'writer HzrdValue<T, UnsafeDomain>,
     hzrd_ptr: NonNull<HzrdPtr>,
 }
 
@@ -183,7 +183,7 @@ impl<T> HzrdReader<'_, T> {
         let hzrd_ptr = unsafe { self.hzrd_ptr.as_ref() };
 
         // SAFETY: We hold a mutable reference, so the hzrd-ptr can not be reused until handle is dropped
-        unsafe { self.core.read(hzrd_ptr) }
+        unsafe { self.value.read(hzrd_ptr) }
     }
 
     /// Get the value of the container (requires the type to be [`Copy`])
