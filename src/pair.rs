@@ -153,7 +153,7 @@ impl<T> From<Box<T>> for HzrdWriter<T> {
 }
 
 // SAFETY: We good?
-unsafe impl<T: Send> Send for HzrdWriter<T> {}
+unsafe impl<T: Send + Sync> Send for HzrdWriter<T> {}
 
 /**
 Container type with the ability to read the contained value.
@@ -211,8 +211,8 @@ impl<T> Drop for HzrdReader<'_, T> {
 }
 
 // SAFETY: We good?
-unsafe impl<T: Send> Send for HzrdReader<'_, T> {}
-unsafe impl<T: Sync> Sync for HzrdReader<'_, T> {}
+unsafe impl<T: Send + Sync> Send for HzrdReader<'_, T> {}
+unsafe impl<T: Send + Sync> Sync for HzrdReader<'_, T> {}
 
 #[cfg(test)]
 mod tests {
