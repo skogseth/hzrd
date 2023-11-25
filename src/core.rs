@@ -1,12 +1,11 @@
 use std::alloc::Layout;
-use std::collections::LinkedList;
 use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
-use crate::utils::SharedCell;
+use crate::stack::SharedStack;
 
 /// Holds a reference to an object protected by a hazard pointer
 pub struct RefHandle<'hzrd, T> {
@@ -84,14 +83,14 @@ deref_impl!(<D: Domain> Domain for Rc<D>);
 deref_impl!(<D: Domain> Domain for Arc<D>);
 
 pub struct SharedDomain {
-    pub hzrd: RwLock<HzrdPtrs>,
+    pub hzrd: HzrdPtrs,
     pub retired: Mutex<RetiredPtrs>,
 }
 
 impl SharedDomain {
     pub const fn new() -> Self {
         Self {
-            hzrd: RwLock::new(HzrdPtrs::new()),
+            hzrd: HzrdPtrs::new(),
             retired: Mutex::new(RetiredPtrs::new()),
         }
     }
@@ -99,7 +98,7 @@ impl SharedDomain {
 
 unsafe impl Domain for SharedDomain {
     fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
-        self.hzrd.write().unwrap().get()
+        self.hzrd.get()
     }
 
     fn just_retire(&self, ret_ptr: RetiredPtr) {
@@ -117,12 +116,7 @@ unsafe impl Domain for SharedDomain {
             return;
         }
 
-        // Try to access the hazard pointers
-        let Ok(hzrd_ptrs) = self.hzrd.try_read() else {
-            return;
-        };
-
-        retired_ptrs.reclaim(&hzrd_ptrs);
+        retired_ptrs.reclaim(&self.hzrd);
     }
 
     fn retire(&self, ret_ptr: RetiredPtr) {
@@ -137,12 +131,7 @@ unsafe impl Domain for SharedDomain {
             return;
         }
 
-        // Try to access the hazard pointers
-        let Ok(hzrd_ptrs) = self.hzrd.try_read() else {
-            return;
-        };
-
-        retired_ptrs.reclaim(&hzrd_ptrs);
+        retired_ptrs.reclaim(&self.hzrd);
     }
 }
 
@@ -277,37 +266,34 @@ impl HzrdPtr {
     }
 }
 
-pub struct HzrdPtrs(LinkedList<SharedCell<HzrdPtr>>);
+pub struct HzrdPtrs(SharedStack<HzrdPtr>);
 
 impl HzrdPtrs {
     pub const fn new() -> Self {
-        Self(LinkedList::new())
+        Self(SharedStack::new())
     }
 
     /// Get a new HzrdPtr (this may allocate a new node in the list)
-    pub fn get(&mut self) -> NonNull<HzrdPtr> {
+    pub fn get(&self) -> NonNull<HzrdPtr> {
         // Important to only grab shared references to the HzrdPtr's
         // as others may be looking at them
         for node in self.0.iter() {
-            if let Some(hzrd_ptr) = node.get().try_take() {
+            if let Some(hzrd_ptr) = node.try_take() {
                 return NonNull::from(hzrd_ptr);
             }
         }
 
-        self.0.push_back(SharedCell::new(HzrdPtr::new()));
-
-        // SAFETY: We pushed to the list, it must be non-empty
-        let hzrd_ptr = unsafe { self.0.back().unwrap_unchecked().get() };
+        let hzrd_ptr = self.0.push(HzrdPtr::new());
 
         NonNull::from(hzrd_ptr)
     }
 
     pub fn contains(&self, addr: usize) -> bool {
-        self.0.iter().any(|node| node.get().get() == addr)
+        self.0.iter().any(|node| node.get() == addr)
     }
 
     pub fn all_available(&self) -> bool {
-        self.0.iter().all(|node| node.get().is_available())
+        self.0.iter().all(|node| node.is_available())
     }
 }
 

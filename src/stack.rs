@@ -18,12 +18,12 @@ pub struct SharedStack<T> {
 }
 
 impl<T> SharedStack<T> {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         let null = AtomicPtr::new(std::ptr::null_mut());
         Self { top: null }
     }
 
-    pub fn push(&self, val: T) {
+    pub fn push(&self, val: T) -> &T {
         let node = Box::into_raw(Box::new(Node::new(val)));
         loop {
             let old_top = self.top.load(Acquire);
@@ -32,6 +32,7 @@ impl<T> SharedStack<T> {
                 break;
             }
         }
+        unsafe { &(*node).val }
     }
 
     pub fn iter<'t>(&'t self) -> Iter<'t, T> {

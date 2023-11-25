@@ -1,5 +1,4 @@
 use std::ptr::NonNull;
-use std::sync::TryLockError;
 
 use crate::core::{HzrdCore, HzrdPtr, RefHandle, SharedDomain};
 use crate::utils::{allocate, free};
@@ -187,18 +186,7 @@ impl<T> Drop for HzrdCell<T> {
         unsafe { self.hzrd_ptr().free() };
 
         // SAFETY: Important that all references/pointers are dropped before inner is dropped
-        let should_drop_inner = match self.core().domain().hzrd.try_read() {
-            // If we can read we need to check if all hzrd pointers are freed
-            Ok(hzrd_ptrs) => hzrd_ptrs.all_available(),
-
-            // If the lock would be blocked then it means someone is writing
-            // ergo we are not the last HzrdCell to be dropped.
-            Err(TryLockError::WouldBlock) => false,
-
-            // If the lock has been poisoned we can't know if it's safe to drop.
-            // It's better to leak the data in that case.
-            Err(TryLockError::Poisoned(_)) => false,
-        };
+        let should_drop_inner = self.core().domain().hzrd.all_available();
 
         if should_drop_inner {
             // SAFETY:
