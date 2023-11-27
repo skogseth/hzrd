@@ -416,4 +416,14 @@ mod tests {
         drop(_handle_1);
         unsafe { hzrd_ptr_1.as_ref().free() };
     }
+
+    #[test]
+    fn deep_leak() {
+        let object = vec![String::from("Hello"), String::from("World")];
+        let ptr = NonNull::from(Box::leak(Box::new(object)));
+
+        // SAFETY: ptr is heap-allocated
+        let retired = unsafe { RetiredPtr::new(ptr) };
+        drop(retired);
+    }
 }
