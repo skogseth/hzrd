@@ -1,5 +1,5 @@
-use std::alloc::Layout;
 use std::ops::Deref;
+use std::any::Any;
 use std::ptr::{addr_of, NonNull};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
@@ -148,13 +148,13 @@ pub struct HzrdValue<T, D: Domain> {
 }
 
 #[allow(unused)]
-impl<T> HzrdValue<T, &'static SharedDomain> {
+impl<T: 'static> HzrdValue<T, &'static SharedDomain> {
     pub fn new(boxed: Box<T>) -> Self {
         Self::new_in(boxed, &GLOBAL_DOMAIN)
     }
 }
 
-impl<T, D: Domain> HzrdValue<T, D> {
+impl<T: 'static, D: Domain> HzrdValue<T, D> {
     pub fn new_in(boxed: Box<T>, domain: D) -> Self {
         let value = AtomicPtr::new(Box::into_raw(boxed));
         Self { value, domain }
@@ -305,28 +305,26 @@ impl Default for HzrdPtrs {
 }
 
 pub struct RetiredPtr {
-    ptr: NonNull<u8>,
-    layout: Layout,
+    ptr: NonNull<dyn Any>,
+    addr: usize,
 }
 
 impl RetiredPtr {
     // SAFETY: Must point to heap-allocated value
-    pub unsafe fn new<T>(ptr: NonNull<T>) -> Self {
-        RetiredPtr {
-            ptr: ptr.cast(),
-            layout: Layout::new::<T>(),
-        }
+    pub unsafe fn new<T: 'static>(ptr: NonNull<T>) -> Self {
+        let addr = ptr.as_ptr() as usize;
+        RetiredPtr { ptr, addr }
     }
 
     pub fn addr(&self) -> usize {
-        self.ptr.as_ptr() as usize
+        self.addr
     }
 }
 
 impl Drop for RetiredPtr {
     fn drop(&mut self) {
         // SAFETY: No reference to this when dropped (and always heap allocated)
-        unsafe { std::alloc::dealloc(self.ptr.as_ptr(), self.layout) };
+        let _ = unsafe { Box::from_raw(self.ptr.as_ptr()) };
     }
 }
 

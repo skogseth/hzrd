@@ -8,13 +8,13 @@ Holds a value that can be shared, and mutated, across multiple threads
 
 See the [crate-level documentation](crate) for more details.
 */
-pub struct HzrdCell<T> {
+pub struct HzrdCell<T: 'static> {
     value: NonNull<HzrdValue<T, SharedDomain>>,
     hzrd_ptr: NonNull<HzrdPtr>,
 }
 
 // Private methods
-impl<T> HzrdCell<T> {
+impl<T: 'static> HzrdCell<T> {
     fn value(&self) -> &HzrdValue<T, SharedDomain> {
         // SAFETY: Only shared references to this are allowed
         unsafe { self.value.as_ref() }
@@ -26,7 +26,7 @@ impl<T> HzrdCell<T> {
     }
 }
 
-impl<T> HzrdCell<T> {
+impl<T: 'static> HzrdCell<T> {
     /**
     Construct a new [`HzrdCell`] with the given value
     The value will be allocated on the heap seperate of the metadata associated with the [`HzrdCell`].
@@ -155,7 +155,7 @@ impl<T> HzrdCell<T> {
 unsafe impl<T: Send + Sync> Send for HzrdCell<T> {}
 unsafe impl<T: Send + Sync> Sync for HzrdCell<T> {}
 
-impl<T> Clone for HzrdCell<T> {
+impl<T: 'static> Clone for HzrdCell<T> {
     fn clone(&self) -> Self {
         let hzrd_ptr = self.value().hzrd_ptr();
 
@@ -166,7 +166,7 @@ impl<T> Clone for HzrdCell<T> {
     }
 }
 
-impl<T> From<Box<T>> for HzrdCell<T> {
+impl<T: 'static> From<Box<T>> for HzrdCell<T> {
     fn from(boxed: Box<T>) -> Self {
         let domain = SharedDomain::new();
         let value = HzrdValue::new_in(boxed, domain);
@@ -179,7 +179,7 @@ impl<T> From<Box<T>> for HzrdCell<T> {
     }
 }
 
-impl<T> Drop for HzrdCell<T> {
+impl<T: 'static> Drop for HzrdCell<T> {
     fn drop(&mut self) {
         // SAFETY: The HzrdPtr is exclusively owned by the current cell
         unsafe { self.hzrd_ptr().free() };
