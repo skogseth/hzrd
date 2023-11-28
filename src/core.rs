@@ -154,23 +154,12 @@ impl<T: 'static> HzrdValue<T, &'static SharedDomain> {
     }
 }
 
-impl<T: 'static, D> HzrdValue<T, D> {
+impl<T, D> HzrdValue<T, D> {
     pub fn new_in(boxed: Box<T>, domain: D) -> Self {
         let value = AtomicPtr::new(Box::into_raw(boxed));
         Self { value, domain }
     }
 
-    fn swap(&self, boxed: Box<T>) -> RetiredPtr {
-        let new_ptr = Box::into_raw(boxed);
-
-        // SAFETY: Ptr must at this point be non-null
-        let old_raw_ptr = self.value.swap(new_ptr, SeqCst);
-        let non_null_ptr = unsafe { NonNull::new_unchecked(old_raw_ptr) };
-
-        // SAFETY: We can guarantee it's pointing to heap-allocated memory
-        unsafe { RetiredPtr::new(non_null_ptr) }
-    }
-    
     pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr) -> RefHandle<'hzrd, T> {
         let mut ptr = self.value.load(SeqCst);
         // SAFETY: Non-null ptr
@@ -193,6 +182,33 @@ impl<T: 'static, D> HzrdValue<T, D> {
     }
 }
 
+impl<T: 'static, D> HzrdValue<T, D> {
+    fn swap(&self, boxed: Box<T>) -> RetiredPtr {
+        let new_ptr = Box::into_raw(boxed);
+
+        // SAFETY: Ptr must at this point be non-null
+        let old_raw_ptr = self.value.swap(new_ptr, SeqCst);
+        let non_null_ptr = unsafe { NonNull::new_unchecked(old_raw_ptr) };
+
+        // SAFETY: We can guarantee it's pointing to heap-allocated memory
+        unsafe { RetiredPtr::new(non_null_ptr) }
+    }
+
+    pub fn domain(&self) -> &D {
+        &self.domain
+    }
+}
+
+impl<T, D: Domain> HzrdValue<T, D> {
+    pub fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
+        self.domain.hzrd_ptr()
+    }
+
+    pub fn reclaim(&self) {
+        self.domain.reclaim();
+    }
+}
+
 impl<T: 'static, D: Domain> HzrdValue<T, D> {
     pub fn set(&self, boxed: Box<T>) {
         let old_ptr = self.swap(boxed);
@@ -202,18 +218,6 @@ impl<T: 'static, D: Domain> HzrdValue<T, D> {
     pub fn just_set(&self, boxed: Box<T>) {
         let old_ptr = self.swap(boxed);
         self.domain.just_retire(old_ptr);
-    }
-
-    pub fn reclaim(&self) {
-        self.domain.reclaim();
-    }
-
-    pub fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
-        self.domain.hzrd_ptr()
-    }
-
-    pub fn domain(&self) -> &D {
-        &self.domain
     }
 }
 
