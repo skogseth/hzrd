@@ -89,7 +89,7 @@ pub struct HzrdWriter<T> {
     value: Box<HzrdValue<T, UnsafeDomain>>,
 }
 
-impl<T> HzrdWriter<T> {
+impl<T: 'static> HzrdWriter<T> {
     /**
     Construct a new [`HzrdWriter`] containing the given value.
     The value will be allocated on the heap seperate of the metadata associated with the [`HzrdWriter`].
@@ -144,7 +144,7 @@ impl<T> HzrdWriter<T> {
     }
 }
 
-impl<T> From<Box<T>> for HzrdWriter<T> {
+impl<T: 'static> From<Box<T>> for HzrdWriter<T> {
     fn from(boxed: Box<T>) -> Self {
         let domain = unsafe { UnsafeDomain::new() };
         let value = Box::new(HzrdValue::new_in(boxed, domain));
@@ -165,7 +165,7 @@ pub struct HzrdReader<'writer, T> {
     hzrd_ptr: NonNull<HzrdPtr>,
 }
 
-impl<T> HzrdReader<'_, T> {
+impl<T: 'static> HzrdReader<'_, T> {
     /**
     Construct a reader for the value contained by the given writer
     */

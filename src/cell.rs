@@ -8,13 +8,13 @@ Holds a value that can be shared, and mutated, across multiple threads
 
 See the [crate-level documentation](crate) for more details.
 */
-pub struct HzrdCell<T> {
+pub struct HzrdCell<T: 'static> {
     value: NonNull<HzrdValue<T, SharedDomain>>,
     hzrd_ptr: NonNull<HzrdPtr>,
 }
 
 // Private methods
-impl<T> HzrdCell<T> {
+impl<T: 'static> HzrdCell<T> {
     fn value(&self) -> &HzrdValue<T, SharedDomain> {
         // SAFETY: Only shared references to this are allowed
         unsafe { self.value.as_ref() }
@@ -26,7 +26,7 @@ impl<T> HzrdCell<T> {
     }
 }
 
-impl<T> HzrdCell<T> {
+impl<T: 'static> HzrdCell<T> {
     /**
     Construct a new [`HzrdCell`] with the given value
     The value will be allocated on the heap seperate of the metadata associated with the [`HzrdCell`].
@@ -155,7 +155,7 @@ impl<T> HzrdCell<T> {
 unsafe impl<T: Send + Sync> Send for HzrdCell<T> {}
 unsafe impl<T: Send + Sync> Sync for HzrdCell<T> {}
 
-impl<T> Clone for HzrdCell<T> {
+impl<T: 'static> Clone for HzrdCell<T> {
     fn clone(&self) -> Self {
         let hzrd_ptr = self.value().hzrd_ptr();
 
@@ -166,7 +166,7 @@ impl<T> Clone for HzrdCell<T> {
     }
 }
 
-impl<T> From<Box<T>> for HzrdCell<T> {
+impl<T: 'static> From<Box<T>> for HzrdCell<T> {
     fn from(boxed: Box<T>) -> Self {
         let domain = SharedDomain::new();
         let value = HzrdValue::new_in(boxed, domain);
@@ -179,23 +179,28 @@ impl<T> From<Box<T>> for HzrdCell<T> {
     }
 }
 
-impl<T> Drop for HzrdCell<T> {
+impl<T: 'static> Drop for HzrdCell<T> {
     fn drop(&mut self) {
         // SAFETY: The HzrdPtr is exclusively owned by the current cell
         unsafe { self.hzrd_ptr().free() };
 
-        // SAFETY:
-        // - Important that all references/pointers are dropped before inner is dropped
-        // - We lock the list of retired pointers to effectively lock this section
-        let should_drop_inner = match self.value().domain().retired.lock() {
-            // We need to check if all hzrd pointers are freed
-            Ok(_guard) => self.value().domain().hzrd.all_available(),
+        // SAFETY: Important to avoid a reference in `should_drop_inner`
+        let should_drop_inner: bool = {
+            let domain = self.value().domain();
 
-            // If the lock has been poisoned we can't know if it's safe to drop.
-            // It's better to leak the data in that case.
-            Err(_) => false,
+            // We need to check if all hzrd pointers are freed
+            // We lock the list of retired pointers to effectively lock this section
+            match domain.retired.lock() {
+                // SAFETY: Important that the guard object is named to hold onto the lock during the call
+                Ok(_guard) => domain.hzrd.all_available(),
+
+                // If the lock has been poisoned we can't know if it's safe to drop.
+                // It's better to leak the data in that case.
+                Err(_) => false,
+            }
         };
 
+        // SAFETY: Important that all references to inner are dropped before this
         if should_drop_inner {
             // SAFETY:
             // - All other cells have been dropped
