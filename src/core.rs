@@ -142,7 +142,7 @@ Holds a value protected by hazard pointers
 
 Each value belongs to a given domain, which contains the set of hazard- and retired pointers protecting the value.
 */
-pub struct HzrdValue<T, D: Domain> {
+pub struct HzrdValue<T, D> {
     value: AtomicPtr<T>,
     domain: D,
 }
@@ -154,7 +154,7 @@ impl<T: 'static> HzrdValue<T, &'static SharedDomain> {
     }
 }
 
-impl<T: 'static, D: Domain> HzrdValue<T, D> {
+impl<T: 'static, D> HzrdValue<T, D> {
     pub fn new_in(boxed: Box<T>, domain: D) -> Self {
         let value = AtomicPtr::new(Box::into_raw(boxed));
         Self { value, domain }
@@ -170,25 +170,7 @@ impl<T: 'static, D: Domain> HzrdValue<T, D> {
         // SAFETY: We can guarantee it's pointing to heap-allocated memory
         unsafe { RetiredPtr::new(non_null_ptr) }
     }
-
-    pub fn set(&self, boxed: Box<T>) {
-        let old_ptr = self.swap(boxed);
-        self.domain.retire(old_ptr);
-    }
-
-    pub fn just_set(&self, boxed: Box<T>) {
-        let old_ptr = self.swap(boxed);
-        self.domain.just_retire(old_ptr);
-    }
-
-    pub fn reclaim(&self) {
-        self.domain.reclaim();
-    }
-
-    pub fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
-        self.domain.hzrd_ptr()
-    }
-
+    
     pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr) -> RefHandle<'hzrd, T> {
         let mut ptr = self.value.load(SeqCst);
         // SAFETY: Non-null ptr
@@ -209,13 +191,33 @@ impl<T: 'static, D: Domain> HzrdValue<T, D> {
         let value = unsafe { &*ptr };
         RefHandle { value, hzrd_ptr }
     }
+}
+
+impl<T: 'static, D: Domain> HzrdValue<T, D> {
+    pub fn set(&self, boxed: Box<T>) {
+        let old_ptr = self.swap(boxed);
+        self.domain.retire(old_ptr);
+    }
+
+    pub fn just_set(&self, boxed: Box<T>) {
+        let old_ptr = self.swap(boxed);
+        self.domain.just_retire(old_ptr);
+    }
+
+    pub fn reclaim(&self) {
+        self.domain.reclaim();
+    }
+
+    pub fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
+        self.domain.hzrd_ptr()
+    }
 
     pub fn domain(&self) -> &D {
         &self.domain
     }
 }
 
-impl<T, D: Domain> Drop for HzrdValue<T, D> {
+impl<T, D> Drop for HzrdValue<T, D> {
     fn drop(&mut self) {
         // SAFETY: No more references can be held if this is being dropped
         let _ = unsafe { Box::from_raw(self.value.load(SeqCst)) };
