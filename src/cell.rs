@@ -199,7 +199,7 @@ impl<T: 'static> Drop for HzrdCell<T> {
                 Err(_) => false,
             }
         };
-        
+
         // SAFETY: Important that all references to inner are dropped before this
         if should_drop_inner {
             // SAFETY:

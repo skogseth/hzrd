@@ -1,5 +1,5 @@
-use std::ops::Deref;
 use std::any::Any;
+use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
