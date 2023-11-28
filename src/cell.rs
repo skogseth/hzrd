@@ -184,18 +184,23 @@ impl<T: 'static> Drop for HzrdCell<T> {
         // SAFETY: The HzrdPtr is exclusively owned by the current cell
         unsafe { self.hzrd_ptr().free() };
 
-        // SAFETY:
-        // - Important that all references/pointers are dropped before inner is dropped
-        // - We lock the list of retired pointers to effectively lock this section
-        let should_drop_inner = match self.value().domain().retired.lock() {
+        // SAFETY: Important to avoid a reference in `should_drop_inner`
+        let should_drop_inner: bool = {
+            let domain = self.value().domain();
+
             // We need to check if all hzrd pointers are freed
-            Ok(_guard) => self.value().domain().hzrd.all_available(),
+            // We lock the list of retired pointers to effectively lock this section
+            match domain.retired.lock() {
+                // SAFETY: Important that the guard object is named to hold onto the lock during the call
+                Ok(_guard) => domain.hzrd.all_available(),
 
-            // If the lock has been poisoned we can't know if it's safe to drop.
-            // It's better to leak the data in that case.
-            Err(_) => false,
+                // If the lock has been poisoned we can't know if it's safe to drop.
+                // It's better to leak the data in that case.
+                Err(_) => false,
+            }
         };
-
+        
+        // SAFETY: Important that all references to inner are dropped before this
         if should_drop_inner {
             // SAFETY:
             // - All other cells have been dropped
