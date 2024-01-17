@@ -1,31 +1,10 @@
 use std::any::Any;
-use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
+use std::sync::atomic::{AtomicUsize, Ordering::*};
 use std::sync::{Arc, Mutex};
 
 use crate::stack::SharedStack;
-
-/// Holds a reference to an object protected by a hazard pointer
-pub struct RefHandle<'hzrd, T> {
-    value: &'hzrd T,
-    hzrd_ptr: &'hzrd HzrdPtr,
-}
-
-impl<T> Deref for RefHandle<'_, T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        self.value
-    }
-}
-
-impl<T> Drop for RefHandle<'_, T> {
-    fn drop(&mut self) {
-        // SAFETY: We are dropping so `value` will never be accessed after this
-        unsafe { self.hzrd_ptr.free() };
-    }
-}
 
 /**
 A trait describing a hazard pointer domain
@@ -83,8 +62,8 @@ deref_impl!(<D: Domain> Domain for Rc<D>);
 deref_impl!(<D: Domain> Domain for Arc<D>);
 
 pub struct SharedDomain {
-    pub hzrd: HzrdPtrs,
-    pub retired: Mutex<RetiredPtrs>,
+    pub(crate) hzrd: HzrdPtrs,
+    pub(crate) retired: Mutex<RetiredPtrs>,
 }
 
 impl SharedDomain {
@@ -119,6 +98,7 @@ unsafe impl Domain for SharedDomain {
         retired_ptrs.reclaim(&self.hzrd);
     }
 
+    // Override this for (hopefully) improved performance
     fn retire(&self, ret_ptr: RetiredPtr) {
         // Grab the lock to retired pointers
         let mut retired_ptrs = self.retired.lock().unwrap();
@@ -134,105 +114,6 @@ unsafe impl Domain for SharedDomain {
         retired_ptrs.reclaim(&self.hzrd);
     }
 }
-
-static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
-
-/**
-Holds a value protected by hazard pointers
-
-Each value belongs to a given domain, which contains the set of hazard- and retired pointers protecting the value.
-*/
-pub struct HzrdCell<T, D: Domain> {
-    value: AtomicPtr<T>,
-    domain: D,
-}
-
-impl<T: 'static> HzrdCell<T, &'static SharedDomain> {
-    pub fn new(boxed: Box<T>) -> Self {
-        Self::new_in(boxed, &GLOBAL_DOMAIN)
-    }
-}
-
-impl<T: 'static, D: Domain> HzrdCell<T, D> {
-    pub fn new_in(boxed: Box<T>, domain: D) -> Self {
-        let value = AtomicPtr::new(Box::into_raw(boxed));
-        Self { value, domain }
-    }
-
-    fn swap(&self, boxed: Box<T>) -> RetiredPtr {
-        let new_ptr = Box::into_raw(boxed);
-
-        // SAFETY: Ptr must at this point be non-null
-        let old_raw_ptr = self.value.swap(new_ptr, SeqCst);
-        let non_null_ptr = unsafe { NonNull::new_unchecked(old_raw_ptr) };
-
-        // SAFETY: We can guarantee it's pointing to heap-allocated memory
-        unsafe { RetiredPtr::new(non_null_ptr) }
-    }
-
-    pub fn set(&self, boxed: Box<T>) {
-        let old_ptr = self.swap(boxed);
-        self.domain.retire(old_ptr);
-    }
-
-    pub fn just_set(&self, boxed: Box<T>) {
-        let old_ptr = self.swap(boxed);
-        self.domain.just_retire(old_ptr);
-    }
-
-    pub fn reclaim(&self) {
-        self.domain.reclaim();
-    }
-
-    pub fn hzrd_ptr(&self) -> &HzrdPtr {
-        self.domain.hzrd_ptr()
-    }
-
-    pub unsafe fn read_with_hzrd_ptr<'hzrd>(
-        &self,
-        hzrd_ptr: &'hzrd HzrdPtr,
-    ) -> RefHandle<'hzrd, T> {
-        let mut ptr = self.value.load(SeqCst);
-        // SAFETY: Non-null ptr
-        unsafe { hzrd_ptr.store(ptr) };
-
-        // We now need to keep updating it until it is in a consistent state
-        loop {
-            ptr = self.value.load(SeqCst);
-            if ptr as usize == hzrd_ptr.get() {
-                break;
-            } else {
-                // SAFETY: Non-null ptr
-                unsafe { hzrd_ptr.store(ptr) };
-            }
-        }
-
-        // SAFETY: This pointer is now held valid by the hazard pointer
-        let value = unsafe { &*ptr };
-        RefHandle { value, hzrd_ptr }
-    }
-
-    pub fn read(&self) -> RefHandle<'_, T> {
-        // Retrieve a new hazard pointer
-        let hzrd_ptr = self.hzrd_ptr();
-
-        // SAFETY: We have a valid hazard pointer to this domain
-        unsafe { self.read_with_hzrd_ptr(&hzrd_ptr) }
-    }
-}
-
-impl<T, D: Domain> Drop for HzrdCell<T, D> {
-    fn drop(&mut self) {
-        // SAFETY: No more references can be held if this is being dropped
-        let _ = unsafe { Box::from_raw(self.value.load(SeqCst)) };
-    }
-}
-
-// SAFETY: This may be somewhat defensive
-unsafe impl<T: Send + Sync, D: Domain + Send + Sync> Send for HzrdCell<T, D> {}
-
-// SAFETY: This may be somewhat defensive
-unsafe impl<T: Send + Sync, D: Domain + Send + Sync> Sync for HzrdCell<T, D> {}
 
 fn dummy_addr() -> usize {
     static DUMMY: u8 = 0;
@@ -404,19 +285,6 @@ mod tests {
         retired.reclaim(&hzrd_ptrs);
         assert_eq!(retired.len(), 0);
         assert!(retired.is_empty());
-    }
-
-    #[test]
-    fn global_domain() {
-        let val_1 = HzrdCell::new(Box::new(0));
-        let val_2 = HzrdCell::new(Box::new(false));
-
-        let _handle_1 = val_1.read();
-        val_1.set(Box::new(1));
-
-        assert_eq!(val_2.domain().retired.lock().unwrap().len(), 1);
-
-        drop(_handle_1);
     }
 
     #[test]
