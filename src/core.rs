@@ -23,7 +23,7 @@ impl<T> Deref for RefHandle<'_, T> {
 impl<T> Drop for RefHandle<'_, T> {
     fn drop(&mut self) {
         // SAFETY: We are dropping so `value` will never be accessed after this
-        unsafe { self.hzrd_ptr.clear() };
+        unsafe { self.hzrd_ptr.free() };
     }
 }
 
@@ -42,7 +42,7 @@ pub unsafe trait Domain {
     This function may allocate a new hazard pointer in the domain.
     This should, ideally, only happen if there are none available.
     */
-    fn hzrd_ptr(&self) -> NonNull<HzrdPtr>;
+    fn hzrd_ptr(&self) -> &HzrdPtr;
 
     /// Retire the provided retired-pointer, but don't reclaim memory
     fn just_retire(&self, ret_ptr: RetiredPtr);
@@ -63,7 +63,7 @@ pub unsafe trait Domain {
 macro_rules! deref_impl {
     ($($sig:tt)+) => {
         unsafe impl $($sig)+ {
-            fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
+            fn hzrd_ptr(&self) -> &HzrdPtr {
                 (**self).hzrd_ptr()
             }
 
@@ -97,7 +97,7 @@ impl SharedDomain {
 }
 
 unsafe impl Domain for SharedDomain {
-    fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
+    fn hzrd_ptr(&self) -> &HzrdPtr {
         self.hzrd.get()
     }
 
@@ -142,19 +142,18 @@ Holds a value protected by hazard pointers
 
 Each value belongs to a given domain, which contains the set of hazard- and retired pointers protecting the value.
 */
-pub struct HzrdValue<T, D: Domain> {
+pub struct HzrdCell<T, D: Domain> {
     value: AtomicPtr<T>,
     domain: D,
 }
 
-#[allow(unused)]
-impl<T: 'static> HzrdValue<T, &'static SharedDomain> {
+impl<T: 'static> HzrdCell<T, &'static SharedDomain> {
     pub fn new(boxed: Box<T>) -> Self {
         Self::new_in(boxed, &GLOBAL_DOMAIN)
     }
 }
 
-impl<T: 'static, D: Domain> HzrdValue<T, D> {
+impl<T: 'static, D: Domain> HzrdCell<T, D> {
     pub fn new_in(boxed: Box<T>, domain: D) -> Self {
         let value = AtomicPtr::new(Box::into_raw(boxed));
         Self { value, domain }
@@ -185,11 +184,14 @@ impl<T: 'static, D: Domain> HzrdValue<T, D> {
         self.domain.reclaim();
     }
 
-    pub fn hzrd_ptr(&self) -> NonNull<HzrdPtr> {
+    pub fn hzrd_ptr(&self) -> &HzrdPtr {
         self.domain.hzrd_ptr()
     }
 
-    pub unsafe fn read<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr) -> RefHandle<'hzrd, T> {
+    pub unsafe fn read_with_hzrd_ptr<'hzrd>(
+        &self,
+        hzrd_ptr: &'hzrd HzrdPtr,
+    ) -> RefHandle<'hzrd, T> {
         let mut ptr = self.value.load(SeqCst);
         // SAFETY: Non-null ptr
         unsafe { hzrd_ptr.store(ptr) };
@@ -210,21 +212,27 @@ impl<T: 'static, D: Domain> HzrdValue<T, D> {
         RefHandle { value, hzrd_ptr }
     }
 
-    pub fn domain(&self) -> &D {
-        &self.domain
+    pub fn read(&self) -> RefHandle<'_, T> {
+        // Retrieve a new hazard pointer
+        let hzrd_ptr = self.hzrd_ptr();
+
+        // SAFETY: We have a valid hazard pointer to this domain
+        unsafe { self.read_with_hzrd_ptr(&hzrd_ptr) }
     }
 }
 
-impl<T, D: Domain> Drop for HzrdValue<T, D> {
+impl<T, D: Domain> Drop for HzrdCell<T, D> {
     fn drop(&mut self) {
         // SAFETY: No more references can be held if this is being dropped
         let _ = unsafe { Box::from_raw(self.value.load(SeqCst)) };
     }
 }
 
-// SAFETY: Is this correct?
-unsafe impl<T: Send + Sync, D: Domain + Send + Sync> Send for HzrdValue<T, D> {}
-unsafe impl<T: Send + Sync, D: Domain + Send + Sync> Sync for HzrdValue<T, D> {}
+// SAFETY: This may be somewhat defensive
+unsafe impl<T: Send + Sync, D: Domain + Send + Sync> Send for HzrdCell<T, D> {}
+
+// SAFETY: This may be somewhat defensive
+unsafe impl<T: Send + Sync, D: Domain + Send + Sync> Sync for HzrdCell<T, D> {}
 
 fn dummy_addr() -> usize {
     static DUMMY: u8 = 0;
@@ -275,18 +283,16 @@ impl HzrdPtrs {
     }
 
     /// Get a new HzrdPtr (this may allocate a new node in the list)
-    pub fn get(&self) -> NonNull<HzrdPtr> {
+    pub fn get(&self) -> &HzrdPtr {
         // Important to only grab shared references to the HzrdPtr's
         // as others may be looking at them
         for node in self.0.iter() {
             if let Some(hzrd_ptr) = node.try_take() {
-                return NonNull::from(hzrd_ptr);
+                return hzrd_ptr;
             }
         }
 
-        let hzrd_ptr = self.0.push(HzrdPtr::new());
-
-        NonNull::from(hzrd_ptr)
+        self.0.push(HzrdPtr::new())
     }
 
     pub fn contains(&self, addr: usize) -> bool {
@@ -385,7 +391,7 @@ mod tests {
         let hzrd_ptrs = HzrdPtrs::new();
         let mut retired = RetiredPtrs::new();
 
-        let hzrd_ptr = unsafe { hzrd_ptrs.get().as_ref() };
+        let hzrd_ptr = hzrd_ptrs.get();
         unsafe { hzrd_ptr.store(value.as_ptr()) };
 
         retired.add(unsafe { RetiredPtr::new(value) });
@@ -402,17 +408,15 @@ mod tests {
 
     #[test]
     fn global_domain() {
-        let val_1 = HzrdValue::new(Box::new(0));
-        let val_2 = HzrdValue::new(Box::new(false));
+        let val_1 = HzrdCell::new(Box::new(0));
+        let val_2 = HzrdCell::new(Box::new(false));
 
-        let hzrd_ptr_1 = val_1.hzrd_ptr();
-        let _handle_1 = unsafe { val_1.read(hzrd_ptr_1.as_ref()) };
+        let _handle_1 = val_1.read();
         val_1.set(Box::new(1));
 
         assert_eq!(val_2.domain().retired.lock().unwrap().len(), 1);
 
         drop(_handle_1);
-        unsafe { hzrd_ptr_1.as_ref().free() };
     }
 
     #[test]
