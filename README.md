@@ -15,26 +15,27 @@ HzrdCell aims to provide something akin to a multithreaded version of std's Cell
 ```rust
 use hzrd::HzrdCell;
 
-let mut cell_1 = HzrdCell::new(false);
-let mut cell_2 = HzrdCell::clone(&cell_1);
+let cell = HzrdCell::new(false);
 
-std::thread::spawn(move || {
-    // Loop until the value is true
-    while !cell_1.get() {
-        std::hint::spin_loop();
-    }
+std::thread::scope(|s| {
+    s.spawn(|| {
+        // Loop until the value is true
+        while !cell.get() {
+            std::hint::spin_loop();
+        }
 
-    // And then set it back to false!
-    cell_1.set(false);
-});
+        // And then set it back to false!
+        cell.set(false);
+    });
 
-std::thread::spawn(move || {
-    // Set the value to true
-    cell_2.set(true);
+    s.spawn(|| {
+        // Set the value to true
+        cell.set(true);
 
-    // And then read the value!
-    // This might print either `true` or `false`
-    println!("{}", cell_2.get()); 
+        // And then read the value!
+        // This might print either `true` or `false`
+        println!("{}", cell.get()); 
+    });
 });
 ```
 
@@ -69,5 +70,3 @@ std::thread::scope(|s| {
     println!("{}", writer.new_reader().get());
 });
 ```
-
-A key consequence of the strategies used in these containers is that mutation is a shared operation, whilst reading is an exclusive one. This has the fun (up for debate) consequence that readers must be marked as `mut`, whilst writers do not.

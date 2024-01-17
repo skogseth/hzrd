@@ -1,3 +1,4 @@
+/*
 use std::thread;
 use std::time::Duration;
 
@@ -5,8 +6,10 @@ use hzrd::pair::{HzrdReader, HzrdWriter};
 
 const TIMEOUT: Duration = Duration::from_millis(1);
 const UPDATE_TIME: Duration = Duration::from_millis(5);
+*/
 
 pub fn main() {
+    /*
     let progress = HzrdWriter::new(0);
 
     thread::scope(|s| {
@@ -28,4 +31,5 @@ pub fn main() {
             progress.set(current + 1);
         }
     });
+    */
 }

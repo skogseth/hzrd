@@ -4,12 +4,11 @@ This crate provides a safe API for shared mutability using hazard pointers for m
 # HzrdCell
 The core API of this crate is the [`HzrdCell`], which provides an API reminiscent to that of the standard library's [`Cell`](std::cell::Cell)-type. However, [`HzrdCell`] allows shared mutation across multiple threads.
 
-The main advantage of [`HzrdCell`], compared to something like a [`Mutex`](std::sync::Mutex), is that reading and writing to the value is lock-free. This is offset by an increased memory use, a significant overhead for creating/destroying cells, as well as some... funkiness. [`HzrdCell`] requires in contrast to the [`Mutex`](std::sync::Mutex) no additional wrapping, such as reference counting, in order to keep references valid for threads that may outlive eachother: There is an inherent reference count in the core functionality of [`HzrdCell`] which maintains this. A consequence of this is that [`HzrdCell`]s should not form cycles.
+The main advantage of [`HzrdCell`], compared to something like a [`Mutex`](std::sync::Mutex), is that reading and writing to the value is lock-free. This is offset by an increased memory use, an significant overhead and additional indirection.
 
 Reading the value of the cell, e.g. via the [`get`](HzrdCell::get) method, is lock-free. Writing to the value is instant, but there is some overhead following the swap which requires locking the metadata of the cell (to allow some synchronization of garbage collection between the cells). The main way of writing to the value is via the [`set`](HzrdCell::set) method. Here is an example of [`HzrdCell`] in use.
 
 ```
-# fn main() -> Result<(), &'static str> {
 use std::time::Duration;
 use std::thread;
 
@@ -22,46 +21,26 @@ enum State {
     Finished,
 }
 
-let mut state = HzrdCell::new(State::Idle);
+let state = HzrdCell::new(State::Idle);
 
-let mut state_1 = HzrdCell::clone(&state);
-let handle_1 = thread::spawn(move || {
-    thread::sleep(Duration::from_millis(1));
-    match state_1.get() {
-        State::Idle => println!("Waiting is boring, ugh"),
-        State::Running => println!("Let's go!"),
-        State::Finished => println!("We got here too late :/"),
-    }
+thread::scope(|s| {
+    s.spawn(|| {
+        thread::sleep(Duration::from_millis(1));
+        match state.get() {
+            State::Idle => println!("Waiting is boring, ugh"),
+            State::Running => println!("Let's go!"),
+            State::Finished => println!("We got here too late :/"),
+        }
+    });
+
+    s.spawn(|| {
+        state.set(State::Running);
+        thread::sleep(Duration::from_millis(1));
+        state.set(State::Finished);
+    });
 });
-
-let state_2 = HzrdCell::clone(&state);
-let handle_2 = thread::spawn(move || {
-    state_2.set(State::Running);
-    thread::sleep(Duration::from_millis(1));
-    state_2.set(State::Finished);
-});
-
-handle_1.join().map_err(|_| "Thread 1 failed")?;
-handle_2.join().map_err(|_| "Thread 2 failed")?;
 
 assert_eq!(state.get(), State::Finished);
-#
-#     Ok(())
-# }
-```
-
-# The elephant in the room
-The keen eye might have observed some of the "funkiness" of [`HzrdCell`] in the previous example: Reading the value of the cell required it to be mutable, whilst writing to the cell did not. Exclusivity is usually associated with mutation, but for the [`HzrdCell`] this relationship is inversed in order to bend the rules of mutation. Another example, here using the [`read`](HzrdCell::read) function to acquire a [`RefHandle`] to the underlying value, as it doesn't implement copy:
-
-```
-# use hzrd::HzrdCell;
-#
-// NOTE: The cell must be marked as mutable to allow reading the value
-let mut cell = HzrdCell::new([0, 1, 2]);
-
-// NOTE: Associated function syntax used to clarify mutation requirement
-let handle = HzrdCell::read(&mut cell);
-assert_eq!(handle[0], 0);
 ```
 */
 
@@ -113,61 +92,6 @@ impl<T: 'static> HzrdCell<T, &'static SharedDomain> {
     */
     pub fn new(value: T) -> Self {
         Self::new_in(value, &GLOBAL_DOMAIN)
-    }
-}
-
-impl<T: 'static, D> HzrdCell<T, D> {
-    /**
-    Construct a new [`HzrdCell`] in the given domain.
-    The value will be allocated on the heap seperate of the metadata associated with the [`HzrdCell`].
-    ```
-    # use hzrd::HzrdCell;
-    #
-    use hzrd::core::SharedDomain;
-    let custom_domain = Arc::new(SharedDomain::new());
-    let cell = HzrdCell::new_in(0, custom_domain);
-    #
-    # let mut cell = cell;
-    # assert_eq!(cell.get(), 0);
-    ```
-    */
-    pub fn new_in(value: T, domain: D) -> Self {
-        let value = AtomicPtr::new(Box::into_raw(Box::new(value)));
-        Self { value, domain }
-    }
-
-    // SAFETY: Requires correct handling of RetiredPtr
-    unsafe fn swap(&self, boxed: Box<T>) -> RetiredPtr {
-        let new_ptr = Box::into_raw(boxed);
-
-        // SAFETY: Ptr must at this point be non-null
-        let old_raw_ptr = self.value.swap(new_ptr, SeqCst);
-        let non_null_ptr = unsafe { NonNull::new_unchecked(old_raw_ptr) };
-
-        // SAFETY: We can guarantee it's pointing to heap-allocated memory
-        unsafe { RetiredPtr::new(non_null_ptr) }
-    }
-
-    // SAFETY: Must be a unique hazard pointer kept valid for the lifetime of the handle
-    unsafe fn read_with_hzrd_ptr<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr) -> RefHandle<'hzrd, T> {
-        let mut ptr = self.value.load(SeqCst);
-        // SAFETY: Non-null ptr
-        unsafe { hzrd_ptr.store(ptr) };
-
-        // We now need to keep updating it until it is in a consistent state
-        loop {
-            ptr = self.value.load(SeqCst);
-            if ptr as usize == hzrd_ptr.get() {
-                break;
-            } else {
-                // SAFETY: Non-null ptr
-                unsafe { hzrd_ptr.store(ptr) };
-            }
-        }
-
-        // SAFETY: This pointer is now held valid by the hazard pointer
-        let value = unsafe { &*ptr };
-        RefHandle { value, hzrd_ptr }
     }
 }
 
@@ -274,6 +198,64 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     /// Reclaim available memory, if possible
     pub fn reclaim(&self) {
         self.domain.reclaim();
+    }
+}
+
+impl<T: 'static, D> HzrdCell<T, D> {
+    /**
+    Construct a new [`HzrdCell`] in the given domain.
+    The value will be allocated on the heap seperate of the metadata associated with the [`HzrdCell`].
+    ```
+    use std::sync::Arc;
+
+    use hzrd::HzrdCell;
+    use hzrd::core::SharedDomain;
+
+    let custom_domain = Arc::new(SharedDomain::new());
+    let cell = HzrdCell::new_in(0, custom_domain);
+    # assert_eq!(cell.get(), 0);
+    ```
+    */
+    pub fn new_in(value: T, domain: D) -> Self {
+        let value = AtomicPtr::new(Box::into_raw(Box::new(value)));
+        Self { value, domain }
+    }
+
+    // SAFETY: Requires correct handling of RetiredPtr
+    unsafe fn swap(&self, boxed: Box<T>) -> RetiredPtr {
+        let new_ptr = Box::into_raw(boxed);
+
+        // SAFETY: Ptr must at this point be non-null
+        let old_raw_ptr = self.value.swap(new_ptr, SeqCst);
+        let non_null_ptr = unsafe { NonNull::new_unchecked(old_raw_ptr) };
+
+        // SAFETY: We can guarantee it's pointing to heap-allocated memory
+        unsafe { RetiredPtr::new(non_null_ptr) }
+    }
+
+    // SAFETY: Must be a unique hazard pointer kept valid for the lifetime of the handle
+    pub unsafe fn read_with_hzrd_ptr<'hzrd>(
+        &self,
+        hzrd_ptr: &'hzrd HzrdPtr,
+    ) -> RefHandle<'hzrd, T> {
+        let mut ptr = self.value.load(SeqCst);
+        // SAFETY: Non-null ptr
+        unsafe { hzrd_ptr.store(ptr) };
+
+        // We now need to keep updating it until it is in a consistent state
+        loop {
+            ptr = self.value.load(SeqCst);
+            if ptr as usize == hzrd_ptr.get() {
+                break;
+            } else {
+                // SAFETY: Non-null ptr
+                unsafe { hzrd_ptr.store(ptr) };
+            }
+        }
+
+        // SAFETY: This pointer is now held valid by the hazard pointer
+        let value = unsafe { &*ptr };
+        RefHandle { value, hzrd_ptr }
     }
 }
 
