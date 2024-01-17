@@ -50,6 +50,8 @@ pub mod core;
 
 mod private {
     // We want to test the code in the readme
+    //
+    // TODO: Data race in the README (yeah, for real)
     #![doc = include_str!("../README.md")]
 }
 
@@ -159,17 +161,14 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
         let hzrd_ptr = self.domain.hzrd_ptr();
 
         let mut ptr = self.value.load(SeqCst);
-        // SAFETY: Non-null ptr
-        unsafe { hzrd_ptr.store(ptr) };
-
-        // We now need to keep updating it until it is in a consistent state
         loop {
+            // SAFETY: Non-null ptr
+            unsafe { hzrd_ptr.store(ptr) };
+
+            // We now need to keep updating it until it is in a consistent state
             ptr = self.value.load(SeqCst);
             if ptr as usize == hzrd_ptr.get() {
                 break;
-            } else {
-                // SAFETY: Non-null ptr
-                unsafe { hzrd_ptr.store(ptr) };
             }
         }
 
