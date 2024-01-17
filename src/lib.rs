@@ -45,10 +45,8 @@ assert_eq!(state.get(), State::Finished);
 */
 
 mod stack;
-mod utils;
 
 pub mod core;
-// pub mod pair;
 
 mod private {
     // We want to test the code in the readme
@@ -81,6 +79,8 @@ impl<T: 'static> HzrdCell<T, &'static SharedDomain> {
     /**
     Construct a new [`HzrdCell`] with the given value in the default domain: [`SharedDomain`]. See [`HzrdCell::new_in`] if you want to construct it in a custom domain.
     The value will be allocated on the heap seperate of the metadata associated with the [`HzrdCell`].
+
+    # Example
     ```
     # use hzrd::HzrdCell;
     #
@@ -101,6 +101,7 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
 
     This method may block after the value has been set.
 
+    # Example
     ```
     # use hzrd::HzrdCell;
     #
@@ -129,9 +130,9 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     /**
     Get a handle holding a reference to the current value held by the `HzrdCell`
 
-    The functionality of this is somewhat similar to a [`MutexGuard`](std::sync::MutexGuard), except the [`RefHandle`] only accepts reading the value. There is no locking mechanism needed to grab this handle, although there might be a short wait if the read overlaps with a write.
+    The functionality of this is somewhat similar to a [`MutexGuard`](std::sync::MutexGuard), except the [`ReadHandle`] only accepts reading the value. There is no locking mechanism needed to grab this handle, although there might be a short wait if the read overlaps with a write.
 
-    The [`RefHandle`] acquired holds a shared reference to the value of the [`HzrdCell`] as it was when the [`read`](Self::read) function was called. If the value of the [`HzrdCell`] is changed after the [`RefHandle`] is acquired its new value is not reflected in the value of the [`RefHandle`], the old value is held alive atleast until all references are dropped. See the documentation of [`RefHandle`] for more information.
+    The [`ReadHandle`] acquired holds a shared reference to the value of the [`HzrdCell`] as it was when the [`read`](Self::read) function was called. If the value of the [`HzrdCell`] is changed after the [`ReadHandle`] is acquired its new value is not reflected in the value of the [`ReadHandle`], the old value is held alive atleast until all references are dropped. See the documentation of [`ReadHandle`] for more information.
 
     # Example
     ```
@@ -153,17 +154,34 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     assert_eq!(bytes, [72, 101, 121]);
     ```
     */
-    pub fn read(&self) -> RefHandle<'_, T> {
+    pub fn read(&self) -> ReadHandle<'_, T> {
         // Retrieve a new hazard pointer
         let hzrd_ptr = self.domain.hzrd_ptr();
 
-        // SAFETY: We have a valid hazard pointer to this domain
-        unsafe { self.read_with_hzrd_ptr(&hzrd_ptr) }
+        let mut ptr = self.value.load(SeqCst);
+        // SAFETY: Non-null ptr
+        unsafe { hzrd_ptr.store(ptr) };
+
+        // We now need to keep updating it until it is in a consistent state
+        loop {
+            ptr = self.value.load(SeqCst);
+            if ptr as usize == hzrd_ptr.get() {
+                break;
+            } else {
+                // SAFETY: Non-null ptr
+                unsafe { hzrd_ptr.store(ptr) };
+            }
+        }
+
+        // SAFETY: This pointer is now held valid by the hazard pointer
+        let value = unsafe { &*ptr };
+        ReadHandle { value, hzrd_ptr }
     }
 
     /**
     Get the value of the cell (requires the type to be [`Copy`])
 
+    # Example
     ```
     # use hzrd::HzrdCell;
     #
@@ -181,6 +199,7 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     /**
     Read the contained value and clone it (requires type to be [`Clone`])
 
+    # Example
     ```
     # use hzrd::HzrdCell;
     #
@@ -232,31 +251,6 @@ impl<T: 'static, D> HzrdCell<T, D> {
         // SAFETY: We can guarantee it's pointing to heap-allocated memory
         unsafe { RetiredPtr::new(non_null_ptr) }
     }
-
-    // SAFETY: Must be a unique hazard pointer kept valid for the lifetime of the handle
-    pub unsafe fn read_with_hzrd_ptr<'hzrd>(
-        &self,
-        hzrd_ptr: &'hzrd HzrdPtr,
-    ) -> RefHandle<'hzrd, T> {
-        let mut ptr = self.value.load(SeqCst);
-        // SAFETY: Non-null ptr
-        unsafe { hzrd_ptr.store(ptr) };
-
-        // We now need to keep updating it until it is in a consistent state
-        loop {
-            ptr = self.value.load(SeqCst);
-            if ptr as usize == hzrd_ptr.get() {
-                break;
-            } else {
-                // SAFETY: Non-null ptr
-                unsafe { hzrd_ptr.store(ptr) };
-            }
-        }
-
-        // SAFETY: This pointer is now held valid by the hazard pointer
-        let value = unsafe { &*ptr };
-        RefHandle { value, hzrd_ptr }
-    }
 }
 
 impl<T, D> Drop for HzrdCell<T, D> {
@@ -272,20 +266,20 @@ unsafe impl<T: Send + Sync, D: Domain + Send + Sync> Send for HzrdCell<T, D> {}
 // SAFETY: This may be somewhat defensive
 unsafe impl<T: Send + Sync, D: Domain + Send + Sync> Sync for HzrdCell<T, D> {}
 
-/// Holds a reference to an object protected by a hazard pointer
-pub struct RefHandle<'hzrd, T> {
+/// Holds a reference to a read value. The value is kept alive by a hazard pointer.
+pub struct ReadHandle<'hzrd, T> {
     value: &'hzrd T,
     hzrd_ptr: &'hzrd HzrdPtr,
 }
 
-impl<T> Deref for RefHandle<'_, T> {
+impl<T> Deref for ReadHandle<'_, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         self.value
     }
 }
 
-impl<T> Drop for RefHandle<'_, T> {
+impl<T> Drop for ReadHandle<'_, T> {
     fn drop(&mut self) {
         // SAFETY: We are dropping so `value` will never be accessed after this
         unsafe { self.hzrd_ptr.free() };
