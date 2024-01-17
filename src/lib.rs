@@ -99,12 +99,38 @@ pub struct HzrdCell<T, D> {
 }
 
 impl<T: 'static> HzrdCell<T, &'static SharedDomain> {
+    /**
+    Construct a new [`HzrdCell`] with the given value in the default domain: [`SharedDomain`]. See [`HzrdCell::new_in`] if you want to construct it in a custom domain.
+    The value will be allocated on the heap seperate of the metadata associated with the [`HzrdCell`].
+    ```
+    # use hzrd::HzrdCell;
+    #
+    let cell = HzrdCell::new(0);
+    #
+    # let mut cell = cell;
+    # assert_eq!(cell.get(), 0);
+    ```
+    */
     pub fn new(value: T) -> Self {
         Self::new_in(value, &GLOBAL_DOMAIN)
     }
 }
 
 impl<T: 'static, D> HzrdCell<T, D> {
+    /**
+    Construct a new [`HzrdCell`] in the given domain.
+    The value will be allocated on the heap seperate of the metadata associated with the [`HzrdCell`].
+    ```
+    # use hzrd::HzrdCell;
+    #
+    use hzrd::core::SharedDomain;
+    let custom_domain = Arc::new(SharedDomain::new());
+    let cell = HzrdCell::new_in(0, custom_domain);
+    #
+    # let mut cell = cell;
+    # assert_eq!(cell.get(), 0);
+    ```
+    */
     pub fn new_in(value: T, domain: D) -> Self {
         let value = AtomicPtr::new(Box::into_raw(Box::new(value)));
         Self { value, domain }
@@ -122,10 +148,8 @@ impl<T: 'static, D> HzrdCell<T, D> {
         unsafe { RetiredPtr::new(non_null_ptr) }
     }
 
-    pub unsafe fn read_with_hzrd_ptr<'hzrd>(
-        &self,
-        hzrd_ptr: &'hzrd HzrdPtr,
-    ) -> RefHandle<'hzrd, T> {
+    // SAFETY: Must be a unique hazard pointer kept valid for the lifetime of the handle
+    unsafe fn read_with_hzrd_ptr<'hzrd>(&self, hzrd_ptr: &'hzrd HzrdPtr) -> RefHandle<'hzrd, T> {
         let mut ptr = self.value.load(SeqCst);
         // SAFETY: Non-null ptr
         unsafe { hzrd_ptr.store(ptr) };
@@ -148,22 +172,63 @@ impl<T: 'static, D> HzrdCell<T, D> {
 }
 
 impl<T: 'static, D: Domain> HzrdCell<T, D> {
+    /**
+    Set the value of the cell
+
+    This method may block after the value has been set.
+
+    ```
+    # use hzrd::HzrdCell;
+    #
+    let cell = HzrdCell::new(0);
+    cell.set(1);
+    #
+    # let mut cell = cell;
+    # assert_eq!(cell.get(), 1);
+    ```
+    */
     pub fn set(&self, value: T) {
         // SAFETY: We retire the pointer in a valid domain
         let old_ptr = unsafe { self.swap(Box::new(value)) };
         self.domain.retire(old_ptr);
     }
 
+    /// Set the value of the cell, without reclaiming memory
+    ///
+    /// This method may block after the value has been set.
     pub fn just_set(&self, value: T) {
         // SAFETY: We retire the pointer in a valid domain
         let old_ptr = unsafe { self.swap(Box::new(value)) };
         self.domain.just_retire(old_ptr);
     }
 
-    pub fn reclaim(&self) {
-        self.domain.reclaim();
-    }
+    /**
+    Get a handle holding a reference to the current value held by the `HzrdCell`
 
+    The functionality of this is somewhat similar to a [`MutexGuard`](std::sync::MutexGuard), except the [`RefHandle`] only accepts reading the value. There is no locking mechanism needed to grab this handle, although there might be a short wait if the read overlaps with a write.
+
+    The [`RefHandle`] acquired holds a shared reference to the value of the [`HzrdCell`] as it was when the [`read`](Self::read) function was called. If the value of the [`HzrdCell`] is changed after the [`RefHandle`] is acquired its new value is not reflected in the value of the [`RefHandle`], the old value is held alive atleast until all references are dropped. See the documentation of [`RefHandle`] for more information.
+
+    # Example
+    ```
+    # use hzrd::HzrdCell;
+    #
+    let string = String::from("Hey");
+
+    // NOTE: The cell must be marked as mutable to allow calling `read`
+    let mut cell = HzrdCell::new(string);
+
+    // NOTE: Associated function syntax used to clarify mutation requirement
+    let handle = HzrdCell::read(&mut cell);
+
+    // We can create multiple references from a single handle
+    let string: &str = &*handle;
+    let bytes: &[u8] = handle.as_bytes();
+
+    assert_eq!(string, "Hey");
+    assert_eq!(bytes, [72, 101, 121]);
+    ```
+    */
     pub fn read(&self) -> RefHandle<'_, T> {
         // Retrieve a new hazard pointer
         let hzrd_ptr = self.domain.hzrd_ptr();
@@ -172,11 +237,43 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
         unsafe { self.read_with_hzrd_ptr(&hzrd_ptr) }
     }
 
+    /**
+    Get the value of the cell (requires the type to be [`Copy`])
+
+    ```
+    # use hzrd::HzrdCell;
+    #
+    let cell = HzrdCell::new(100);
+    assert_eq!(cell.get(), 100);
+    ```
+    */
     pub fn get(&self) -> T
     where
         T: Copy,
     {
         *self.read()
+    }
+
+    /**
+    Read the contained value and clone it (requires type to be [`Clone`])
+
+    ```
+    # use hzrd::HzrdCell;
+    #
+    let cell = HzrdCell::new([1, 2, 3]);
+    assert_eq!(cell.cloned(), [1, 2, 3]);
+    ```
+    */
+    pub fn cloned(&self) -> T
+    where
+        T: Clone,
+    {
+        self.read().clone()
+    }
+
+    /// Reclaim available memory, if possible
+    pub fn reclaim(&self) {
+        self.domain.reclaim();
     }
 }
 
@@ -215,6 +312,8 @@ impl<T> Drop for RefHandle<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -229,4 +328,81 @@ mod tests {
 
         drop(_handle_1);
     }
+
+    #[test]
+    fn shallow_drop_test() {
+        let _ = HzrdCell::new(0);
+    }
+
+    #[test]
+    fn deep_drop_test() {
+        let _ = HzrdCell::new(vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn single() {
+        let string = String::new();
+        let cell = HzrdCell::new(string);
+
+        {
+            let handle = cell.read();
+            assert_eq!(handle.len(), 0);
+            assert_eq!(*handle, "");
+        }
+
+        let new_string = String::from("Hello world!");
+        cell.set(new_string);
+
+        {
+            let handle = cell.read();
+            assert_eq!(handle.len(), 12);
+            assert_eq!(*handle, "Hello world!");
+        }
+
+        cell.reclaim();
+    }
+
+    #[test]
+    fn double() {
+        let string = String::new();
+        let cell = HzrdCell::new(string);
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let handle = cell.read();
+                std::thread::sleep(Duration::from_millis(200));
+                assert_eq!(*handle, "");
+            });
+
+            std::thread::sleep(Duration::from_millis(100));
+
+            s.spawn(|| {
+                let handle = cell.read();
+                assert_eq!(*handle, "");
+                drop(handle);
+
+                let new_string = String::from("Hello world!");
+                cell.set(new_string);
+            });
+        });
+
+        cell.reclaim();
+        assert_eq!(cell.cloned(), "Hello world!");
+    }
+
+    /*
+    #[test]
+    fn manual_reclaim() {
+        let cell = HzrdCell::new([1, 2, 3]);
+
+        cell.just_set([4, 5, 6]);
+        assert_eq!(cell.num_retired(), 1);
+
+        cell.just_set([7, 8, 9]);
+        assert_eq!(cell.num_retired(), 2);
+
+        cell.reclaim();
+        assert_eq!(cell.num_retired(), 0);
+    }
+    */
 }
