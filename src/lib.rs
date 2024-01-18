@@ -66,11 +66,11 @@ use core::{Domain, HzrdPtr, RetiredPtr, SharedDomain};
 pub static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
 
 /**
-Holds a value protected by hazard pointers
+Holds a value protected by hazard pointers.
 
-Each value belongs to a given domain, which contains the set of hazard- and retired pointers protecting the value.
+Each [`HzrdCell`] belongs to a given domain, which contains the set of hazard- and retired pointers protecting the value. See the [`Domain`](core::Domain) trait for more details on this.
 
-See the [crate-level documentation](crate) for more details.
+See the [crate-level documentation](crate) for a "getting started" guide.
 */
 pub struct HzrdCell<T, D> {
     value: AtomicPtr<T>,
@@ -140,13 +140,9 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     ```
     # use hzrd::HzrdCell;
     #
-    let string = String::from("Hey");
+    let cell = HzrdCell::new(String::from("Hey"));
 
-    // NOTE: The cell must be marked as mutable to allow calling `read`
-    let mut cell = HzrdCell::new(string);
-
-    // NOTE: Associated function syntax used to clarify mutation requirement
-    let handle = HzrdCell::read(&mut cell);
+    let handle = cell.read();
 
     // We can create multiple references from a single handle
     let string: &str = &*handle;
@@ -223,6 +219,8 @@ impl<T: 'static, D> HzrdCell<T, D> {
     /**
     Construct a new [`HzrdCell`] in the given domain.
     The value will be allocated on the heap seperate of the metadata associated with the [`HzrdCell`].
+
+    # Example
     ```
     use std::sync::Arc;
 
@@ -230,8 +228,10 @@ impl<T: 'static, D> HzrdCell<T, D> {
     use hzrd::core::SharedDomain;
 
     let custom_domain = Arc::new(SharedDomain::new());
-    let cell = HzrdCell::new_in(0, custom_domain);
-    # assert_eq!(cell.get(), 0);
+    let cell_1 = HzrdCell::new_in(0, Arc::clone(&custom_domain));
+    let cell_2 = HzrdCell::new_in(false, Arc::clone(&custom_domain));
+    # assert_eq!(cell_1.get(), 0);
+    # assert_eq!(cell_2.get(), false);
     ```
     */
     pub fn new_in(value: T, domain: D) -> Self {
@@ -259,11 +259,11 @@ impl<T, D> Drop for HzrdCell<T, D> {
     }
 }
 
-// SAFETY: This may be somewhat defensive
-unsafe impl<T: Send + Sync, D: Domain + Send + Sync> Send for HzrdCell<T, D> {}
+// SAFETY: Both the type held and the domain need to be `Send`
+unsafe impl<T: Send, D: Send> Send for HzrdCell<T, D> {}
 
-// SAFETY: This may be somewhat defensive
-unsafe impl<T: Send + Sync, D: Domain + Send + Sync> Sync for HzrdCell<T, D> {}
+// SAFETY: This may be somewhat defensive?
+unsafe impl<T: Send + Sync, D: Send + Sync> Sync for HzrdCell<T, D> {}
 
 /// Holds a reference to a read value. The value is kept alive by a hazard pointer.
 pub struct ReadHandle<'hzrd, T> {
