@@ -68,7 +68,7 @@ pub static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
 /**
 Holds a value protected by hazard pointers.
 
-Each [`HzrdCell`] belongs to a given domain, which contains the set of hazard- and retired pointers protecting the value. See the [`Domain`](core::Domain) trait for more details on this.
+Each [`HzrdCell`] belongs to a given domain, which contains the set of hazard- and retired pointers protecting the value. See the [`Domain`] trait for more details on this.
 
 See the [crate-level documentation](crate) for a "getting started" guide.
 */
@@ -79,7 +79,8 @@ pub struct HzrdCell<T, D> {
 
 impl<T: 'static> HzrdCell<T, &'static SharedDomain> {
     /**
-    Construct a new [`HzrdCell`] with the given value in the default domain: [`SharedDomain`]. See [`HzrdCell::new_in`] if you want to construct it in a custom domain.
+    Construct a new [`HzrdCell`] with the given value in the default domain: A global [`SharedDomain`]. See [`HzrdCell::new_in`] if you want to construct in a custom domain.
+
     The value will be allocated on the heap seperate of the metadata associated with the [`HzrdCell`].
 
     # Example
@@ -156,21 +157,8 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
         // Retrieve a new hazard pointer
         let hzrd_ptr = self.domain.hzrd_ptr();
 
-        let mut ptr = self.value.load(SeqCst);
-        loop {
-            // SAFETY: Non-null ptr
-            unsafe { hzrd_ptr.store(ptr) };
-
-            // We now need to keep updating it until it is in a consistent state
-            ptr = self.value.load(SeqCst);
-            if ptr as usize == hzrd_ptr.get() {
-                break;
-            }
-        }
-
-        // SAFETY: This pointer is now held valid by the hazard pointer
-        let value = unsafe { &*ptr };
-        ReadHandle { value, hzrd_ptr }
+        // SAFETY: The hazard pointer will protect the value
+        unsafe { ReadHandle::read_unchecked(&self.value, hzrd_ptr) }
     }
 
     /**
@@ -271,6 +259,26 @@ pub struct ReadHandle<'hzrd, T> {
     hzrd_ptr: &'hzrd HzrdPtr,
 }
 
+impl<'hzrd, T> ReadHandle<'hzrd, T> {
+    unsafe fn read_unchecked(value: &'hzrd AtomicPtr<T>, hzrd_ptr: &'hzrd HzrdPtr) -> Self {
+        let mut ptr = value.load(SeqCst);
+        loop {
+            // SAFETY: Non-null ptr
+            unsafe { hzrd_ptr.store(ptr) };
+
+            // We now need to keep updating it until it is in a consistent state
+            ptr = value.load(SeqCst);
+            if ptr as usize == hzrd_ptr.get() {
+                break;
+            }
+        }
+
+        // SAFETY: This pointer is now held valid by the hazard pointer
+        let value = unsafe { &*ptr };
+        Self { value, hzrd_ptr }
+    }
+}
+
 impl<T> Deref for ReadHandle<'_, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
@@ -282,6 +290,35 @@ impl<T> Drop for ReadHandle<'_, T> {
     fn drop(&mut self) {
         // SAFETY: We are dropping so `value` will never be accessed after this
         unsafe { self.hzrd_ptr.free() };
+    }
+}
+
+pub struct HzrdReader<'cell, T> {
+    value: &'cell AtomicPtr<T>,
+    hzrd_ptr: &'cell HzrdPtr,
+}
+
+impl<T> HzrdReader<'_, T> {
+    /// See [`HzrdCell::read`]
+    pub fn read(&self) -> ReadHandle<'_, T> {
+        // SAFETY: The hazard pointer will protect the value
+        unsafe { ReadHandle::read_unchecked(self.value, self.hzrd_ptr) }
+    }
+
+    /// See [`HzrdCell::get`]
+    pub fn get(&self) -> T
+    where
+        T: Copy,
+    {
+        *self.read()
+    }
+
+    /// See [`HzrdCell::cloned`]
+    pub fn cloned(&self) -> T
+    where
+        T: Clone,
+    {
+        self.read().clone()
     }
 }
 
