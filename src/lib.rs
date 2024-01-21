@@ -158,7 +158,7 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
         let hzrd_ptr = self.domain.hzrd_ptr();
 
         // SAFETY: The hazard pointer will protect the value
-        unsafe { ReadHandle::read_unchecked(&self.value, hzrd_ptr) }
+        unsafe { ReadHandle::read_unchecked(&self.value, hzrd_ptr, Action::Free) }
     }
 
     /**
@@ -200,6 +200,13 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     /// Reclaim available memory, if possible
     pub fn reclaim(&self) {
         self.domain.reclaim();
+    }
+
+    pub fn reader(&self) -> HzrdReader<'_, T> {
+        HzrdReader {
+            value: &self.value,
+            hzrd_ptr: self.domain.hzrd_ptr(),
+        }
     }
 }
 
@@ -253,14 +260,25 @@ unsafe impl<T: Send, D: Send> Send for HzrdCell<T, D> {}
 // SAFETY: This may be somewhat defensive?
 unsafe impl<T: Send + Sync, D: Send + Sync> Sync for HzrdCell<T, D> {}
 
+#[derive(Clone, Copy)]
+enum Action {
+    Free,
+    Clear,
+}
+
 /// Holds a reference to a read value. The value is kept alive by a hazard pointer.
 pub struct ReadHandle<'hzrd, T> {
     value: &'hzrd T,
     hzrd_ptr: &'hzrd HzrdPtr,
+    action: Action,
 }
 
 impl<'hzrd, T> ReadHandle<'hzrd, T> {
-    unsafe fn read_unchecked(value: &'hzrd AtomicPtr<T>, hzrd_ptr: &'hzrd HzrdPtr) -> Self {
+    unsafe fn read_unchecked(
+        value: &'hzrd AtomicPtr<T>,
+        hzrd_ptr: &'hzrd HzrdPtr,
+        action: Action,
+    ) -> Self {
         let mut ptr = value.load(SeqCst);
         loop {
             // SAFETY: Non-null ptr
@@ -275,7 +293,12 @@ impl<'hzrd, T> ReadHandle<'hzrd, T> {
 
         // SAFETY: This pointer is now held valid by the hazard pointer
         let value = unsafe { &*ptr };
-        Self { value, hzrd_ptr }
+
+        Self {
+            value,
+            hzrd_ptr,
+            action,
+        }
     }
 }
 
@@ -289,7 +312,10 @@ impl<T> Deref for ReadHandle<'_, T> {
 impl<T> Drop for ReadHandle<'_, T> {
     fn drop(&mut self) {
         // SAFETY: We are dropping so `value` will never be accessed after this
-        unsafe { self.hzrd_ptr.free() };
+        match self.action {
+            Action::Free => unsafe { self.hzrd_ptr.free() },
+            Action::Clear => unsafe { self.hzrd_ptr.clear() },
+        }
     }
 }
 
@@ -300,13 +326,13 @@ pub struct HzrdReader<'cell, T> {
 
 impl<T> HzrdReader<'_, T> {
     /// See [`HzrdCell::read`]
-    pub fn read(&self) -> ReadHandle<'_, T> {
+    pub fn read(&mut self) -> ReadHandle<'_, T> {
         // SAFETY: The hazard pointer will protect the value
-        unsafe { ReadHandle::read_unchecked(self.value, self.hzrd_ptr) }
+        unsafe { ReadHandle::read_unchecked(self.value, self.hzrd_ptr, Action::Clear) }
     }
 
     /// See [`HzrdCell::get`]
-    pub fn get(&self) -> T
+    pub fn get(&mut self) -> T
     where
         T: Copy,
     {
@@ -314,7 +340,7 @@ impl<T> HzrdReader<'_, T> {
     }
 
     /// See [`HzrdCell::cloned`]
-    pub fn cloned(&self) -> T
+    pub fn cloned(&mut self) -> T
     where
         T: Clone,
     {
@@ -402,19 +428,44 @@ mod tests {
         assert_eq!(cell.cloned(), "Hello world!");
     }
 
-    /*
+    #[test]
+    fn readers() {
+        let cell = HzrdCell::new(vec![0, 1, 2]);
+
+        let readers: Vec<_> = (0..10).map(|_| cell.reader()).collect();
+
+        for mut reader in readers {
+            assert_eq!(reader.read().as_slice(), [0, 1, 2]);
+        }
+    }
+
     #[test]
     fn manual_reclaim() {
-        let cell = HzrdCell::new([1, 2, 3]);
+        let local_domain = SharedDomain::new();
+        let cell = HzrdCell::new_in([1, 2, 3], local_domain);
 
         cell.just_set([4, 5, 6]);
-        assert_eq!(cell.num_retired(), 1);
+        assert_eq!(
+            cell.domain.number_of_retired_ptrs(),
+            1,
+            "Retired ptrs: {:?}",
+            cell.domain.retired,
+        );
 
         cell.just_set([7, 8, 9]);
-        assert_eq!(cell.num_retired(), 2);
+        assert_eq!(
+            cell.domain.number_of_retired_ptrs(),
+            2,
+            "Retired ptrs: {:?}",
+            cell.domain.retired,
+        );
 
         cell.reclaim();
-        assert_eq!(cell.num_retired(), 0);
+        assert_eq!(
+            cell.domain.number_of_retired_ptrs(),
+            0,
+            "Retired ptrs: {:?}",
+            cell.domain.retired,
+        );
     }
-    */
 }

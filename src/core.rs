@@ -61,6 +61,7 @@ deref_impl!(<D: Domain> Domain for &D);
 deref_impl!(<D: Domain> Domain for Rc<D>);
 deref_impl!(<D: Domain> Domain for Arc<D>);
 
+#[derive(Debug)]
 pub struct SharedDomain {
     pub(crate) hzrd: HzrdPtrs,
     pub(crate) retired: Mutex<RetiredPtrs>,
@@ -72,6 +73,16 @@ impl SharedDomain {
             hzrd: HzrdPtrs::new(),
             retired: Mutex::new(RetiredPtrs::new()),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn number_of_hzrd_ptrs(&self) -> usize {
+        self.hzrd.0.iter().count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn number_of_retired_ptrs(&self) -> usize {
+        self.retired.lock().unwrap().len()
     }
 }
 
@@ -115,6 +126,8 @@ unsafe impl Domain for SharedDomain {
     }
 }
 
+// TODO: Introduce LocalDomain (`Send` but not `Sync`, use UnsafeCell + LinkedList & Vec)
+
 fn dummy_addr() -> usize {
     static DUMMY: u8 = 0;
     addr_of!(DUMMY) as usize
@@ -156,6 +169,15 @@ impl HzrdPtr {
     }
 }
 
+impl std::fmt::Debug for HzrdPtr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut f = f.debug_tuple("HzrdPtr");
+        f.field(&self.0.load(Relaxed));
+        f.finish()
+    }
+}
+
+#[derive(Debug)]
 pub struct HzrdPtrs(SharedStack<HzrdPtr>);
 
 impl HzrdPtrs {
@@ -191,6 +213,7 @@ impl Default for HzrdPtrs {
     }
 }
 
+#[derive(Debug)]
 pub struct RetiredPtr {
     ptr: NonNull<dyn Any>,
     addr: usize,
@@ -218,6 +241,7 @@ impl Drop for RetiredPtr {
 unsafe impl Send for RetiredPtr {}
 unsafe impl Sync for RetiredPtr {}
 
+#[derive(Debug)]
 pub struct RetiredPtrs(Vec<RetiredPtr>);
 
 impl RetiredPtrs {

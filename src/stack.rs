@@ -1,18 +1,20 @@
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicPtr, Ordering::*};
 
+#[derive(Debug)]
 pub struct Node<T> {
     val: T,
     next: AtomicPtr<Node<T>>,
 }
 
 impl<T> Node<T> {
-    pub fn new(val: T) -> Self {
+    pub const fn new(val: T) -> Self {
         let null = AtomicPtr::new(std::ptr::null_mut());
         Self { val, next: null }
     }
 }
 
+#[derive(Debug)]
 pub struct SharedStack<T> {
     top: AtomicPtr<Node<T>>,
 }
@@ -39,11 +41,9 @@ impl<T> SharedStack<T> {
         unsafe { &(*node).val }
     }
 
-    #[allow(clippy::needless_lifetimes)]
-    pub fn iter<'t>(&'t self) -> Iter<'t, T> {
-        let next = AtomicPtr::new(self.top.load(Acquire));
+    pub fn iter(&self) -> Iter<'_, T> {
         Iter {
-            next,
+            next: AtomicPtr::new(self.top.load(Acquire)),
             _marker: PhantomData,
         }
     }
@@ -74,6 +74,7 @@ impl<T> Drop for SharedStack<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct Iter<'t, T> {
     next: AtomicPtr<Node<T>>,
     _marker: PhantomData<&'t SharedStack<T>>,
@@ -124,5 +125,24 @@ mod tests {
         });
 
         assert_eq!(stack.to_vec().len(), 4);
+    }
+
+    #[test]
+    fn deep_types() {
+        let stack = SharedStack::new();
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                for _ in 0..100 {
+                    stack.push(vec![String::from("hello"), String::from("worlds")]);
+                }
+            });
+
+            s.spawn(|| {
+                for _ in 0..100 {
+                    stack.push(vec![String::from("hazard"), String::from("pointer")]);
+                }
+            });
+        });
     }
 }
