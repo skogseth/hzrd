@@ -76,12 +76,7 @@ impl SharedDomain {
     }
 
     #[cfg(test)]
-    pub(crate) fn number_of_hzrd_ptrs(&self) -> usize {
-        self.hzrd.0.iter().count()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn number_of_retired_ptrs(&self) -> usize {
+    pub fn number_of_retired_ptrs(&self) -> usize {
         self.retired.lock().unwrap().len()
     }
 }
@@ -171,9 +166,7 @@ impl HzrdPtr {
 
 impl std::fmt::Debug for HzrdPtr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut f = f.debug_tuple("HzrdPtr");
-        f.field(&self.0.load(Relaxed));
-        f.finish()
+        write!(f, "HzrdPtr({:#x})", self.0.load(Relaxed))
     }
 }
 
@@ -198,6 +191,10 @@ impl HzrdPtrs {
         self.0.push(HzrdPtr::new())
     }
 
+    pub fn count(&self) -> usize {
+        self.0.iter().count()
+    }
+
     pub fn contains(&self, addr: usize) -> bool {
         self.0.iter().any(|node| node.get() == addr)
     }
@@ -216,18 +213,16 @@ impl Default for HzrdPtrs {
 #[derive(Debug)]
 pub struct RetiredPtr {
     ptr: NonNull<dyn Any>,
-    addr: usize,
 }
 
 impl RetiredPtr {
     // SAFETY: Must point to heap-allocated value
     pub unsafe fn new<T: 'static>(ptr: NonNull<T>) -> Self {
-        let addr = ptr.as_ptr() as usize;
-        RetiredPtr { ptr, addr }
+        RetiredPtr { ptr }
     }
 
     pub fn addr(&self) -> usize {
-        self.addr
+        self.ptr.as_ptr() as *mut () as usize
     }
 }
 
@@ -288,10 +283,15 @@ mod tests {
         unsafe { hzrd_ptr.store(&mut value) };
     }
 
+    fn new_value<T>(value: T) -> NonNull<T> {
+        let boxed = Box::new(value);
+        let raw = Box::into_raw(boxed);
+        unsafe { NonNull::new_unchecked(raw) }
+    }
+
     #[test]
     fn retirement() {
-        let value = Box::into_raw(Box::new([1, 2, 3]));
-        let value = unsafe { NonNull::new_unchecked(value) };
+        let value = new_value([1, 2, 3]);
 
         let hzrd_ptrs = HzrdPtrs::new();
         let mut retired = RetiredPtrs::new();
@@ -309,6 +309,18 @@ mod tests {
         retired.reclaim(&hzrd_ptrs);
         assert_eq!(retired.len(), 0);
         assert!(retired.is_empty());
+    }
+
+    #[test]
+    fn domain() {
+        let ptr = new_value(['a', 'b', 'c', 'd']);
+        let domain = SharedDomain::new();
+
+        let hzrd_ptr = domain.hzrd_ptr();
+        unsafe { hzrd_ptr.store(ptr.as_ptr()) };
+        assert!(domain.hzrd.contains(ptr.as_ptr() as usize));
+
+        domain.retire(unsafe { RetiredPtr::new(ptr) });
     }
 
     #[test]

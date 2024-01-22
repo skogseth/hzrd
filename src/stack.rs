@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicPtr, Ordering::*};
 
@@ -14,7 +15,6 @@ impl<T> Node<T> {
     }
 }
 
-#[derive(Debug)]
 pub struct SharedStack<T> {
     top: AtomicPtr<Node<T>>,
 }
@@ -57,9 +57,23 @@ impl<T> SharedStack<T> {
     }
 }
 
+impl<T: Debug> Debug for SharedStack<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
 impl<T> Default for SharedStack<T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<'t, T> IntoIterator for &'t SharedStack<T> {
+    type Item = &'t T;
+    type IntoIter = Iter<'t, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -99,13 +113,23 @@ impl<'t, T> Iterator for Iter<'t, T> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn stacks_first_test() {
+    fn stack() -> SharedStack<i32> {
         let stack = SharedStack::new();
         stack.push(0);
         stack.push(1);
         stack.push(2);
-        assert_eq!(stack.to_vec(), [2, 1, 0]);
+        stack
+    }
+
+    #[test]
+    fn stacks_first_test() {
+        assert_eq!(stack().to_vec(), [2, 1, 0]);
+    }
+
+    #[test]
+    fn iter_test() {
+        let stack = stack();
+        assert_eq!(stack.iter().count(), 3);
     }
 
     #[test]

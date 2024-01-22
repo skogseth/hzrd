@@ -202,6 +202,23 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
         self.domain.reclaim();
     }
 
+    /**
+    Construct a reader to the current cell
+
+    Constructing a reader can be helpful (and more performant) when doing consecutive reads.
+    The reader will hold a [`HzrdPtr`] which will be reused for each read. The reader exposes
+    a similar API to [`HzrdCell`], with the exception of "write-action" such as
+    [`HzrdCell::set`] & [`HzrdCell::reclaim`]. See [`HzrdReader for more details`].
+
+    # Example
+    ```
+    # use hzrd::HzrdCell;
+    let cell = HzrdCell::new(false);
+    let reader = cell.reader();
+    # let mut reader = reader;
+    # assert_eq!(reader.get(), false)
+    ```
+    */
     pub fn reader(&self) -> HzrdReader<'_, T> {
         HzrdReader {
             value: &self.value,
@@ -260,8 +277,8 @@ unsafe impl<T: Send, D: Send> Send for HzrdCell<T, D> {}
 // SAFETY: This may be somewhat defensive?
 unsafe impl<T: Send + Sync, D: Send + Sync> Sync for HzrdCell<T, D> {}
 
-#[derive(Clone, Copy)]
-enum Action {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Action {
     Free,
     Clear,
 }
@@ -274,7 +291,7 @@ pub struct ReadHandle<'hzrd, T> {
 }
 
 impl<'hzrd, T> ReadHandle<'hzrd, T> {
-    unsafe fn read_unchecked(
+    pub unsafe fn read_unchecked(
         value: &'hzrd AtomicPtr<T>,
         hzrd_ptr: &'hzrd HzrdPtr,
         action: Action,
@@ -285,9 +302,11 @@ impl<'hzrd, T> ReadHandle<'hzrd, T> {
             unsafe { hzrd_ptr.store(ptr) };
 
             // We now need to keep updating it until it is in a consistent state
-            ptr = value.load(SeqCst);
-            if ptr as usize == hzrd_ptr.get() {
+            let new_ptr = value.load(SeqCst);
+            if ptr == new_ptr {
                 break;
+            } else {
+                ptr = new_ptr
             }
         }
 
@@ -426,6 +445,38 @@ mod tests {
 
         cell.reclaim();
         assert_eq!(cell.cloned(), "Hello world!");
+    }
+
+    #[test]
+    fn retirement() {
+        let cell = HzrdCell::new_in(String::new(), SharedDomain::new());
+        assert_eq!(cell.domain.hzrd.count(), 0, "{:?}", cell.domain.hzrd);
+
+        let _handle_1 = cell.read();
+        assert_eq!(cell.domain.hzrd.count(), 1, "{:?}", cell.domain.hzrd);
+
+        cell.set("Hello world".into());
+        assert_eq!(cell.domain.number_of_retired_ptrs(), 1);
+
+        // ------------
+
+        let _handle_2 = cell.read();
+        assert_eq!(cell.domain.hzrd.count(), 2, "{:?}", cell.domain.hzrd);
+
+        cell.set("Pizza world".into());
+        assert_eq!(cell.domain.number_of_retired_ptrs(), 2);
+
+        // ------------
+
+        drop(_handle_2);
+        cell.set("Ramen world".into());
+        assert_eq!(cell.domain.number_of_retired_ptrs(), 1);
+
+        // ------------
+
+        drop(_handle_1);
+        cell.reclaim();
+        assert_eq!(cell.domain.number_of_retired_ptrs(), 0);
     }
 
     #[test]
