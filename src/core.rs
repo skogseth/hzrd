@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::ptr::{addr_of, NonNull};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering::*};
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
 
 use crate::stack::SharedStack;
@@ -141,11 +141,11 @@ impl HzrdPtr {
     }
 
     pub fn is_available(&self) -> bool {
-        self.0.load(Relaxed) == 0
+        self.0.load(SeqCst) == 0
     }
 
     pub fn try_take(&self) -> Option<&Self> {
-        match self.0.compare_exchange(0, dummy_addr(), AcqRel, Relaxed) {
+        match self.0.compare_exchange(0, dummy_addr(), SeqCst, SeqCst) {
             Ok(_) => Some(self),
             Err(_) => None,
         }
@@ -156,17 +156,17 @@ impl HzrdPtr {
     }
 
     pub unsafe fn clear(&self) {
-        self.0.store(dummy_addr(), Release);
+        self.0.store(dummy_addr(), SeqCst);
     }
 
     pub unsafe fn free(&self) {
-        self.0.store(0, Release);
+        self.0.store(0, SeqCst);
     }
 }
 
 impl std::fmt::Debug for HzrdPtr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HzrdPtr({:#x})", self.0.load(Relaxed))
+        write!(f, "HzrdPtr({:#x})", self.0.load(SeqCst))
     }
 }
 

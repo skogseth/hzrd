@@ -59,7 +59,7 @@ mod private {
 
 use std::ops::Deref;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicPtr, Ordering::*};
+use std::sync::atomic::{AtomicPtr, Ordering::SeqCst};
 
 use core::{Domain, HzrdPtr, RetiredPtr, SharedDomain};
 
@@ -72,6 +72,7 @@ Each [`HzrdCell`] belongs to a given domain, which contains the set of hazard- a
 
 See the [crate-level documentation](crate) for a "getting started" guide.
 */
+#[derive(Debug)]
 pub struct HzrdCell<T, D> {
     value: AtomicPtr<T>,
     domain: D,
@@ -284,6 +285,7 @@ pub enum Action {
 }
 
 /// Holds a reference to a read value. The value is kept alive by a hazard pointer.
+#[derive(Debug)]
 pub struct ReadHandle<'hzrd, T> {
     value: &'hzrd T,
     hzrd_ptr: &'hzrd HzrdPtr,
@@ -303,7 +305,7 @@ impl<'hzrd, T> ReadHandle<'hzrd, T> {
 
             // We now need to keep updating it until it is in a consistent state
             let new_ptr = value.load(SeqCst);
-            if ptr == new_ptr {
+            if std::ptr::addr_eq(ptr, new_ptr) {
                 break;
             } else {
                 ptr = new_ptr
