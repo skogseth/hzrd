@@ -1,3 +1,5 @@
+#![warn(unsafe_op_in_unsafe_fn)]
+
 /*!
 This crate provides a safe API for shared mutability using hazard pointers for memory reclamation.
 
@@ -520,5 +522,82 @@ mod tests {
             "Retired ptrs: {:?}",
             cell.domain.retired,
         );
+    }
+
+    #[test]
+    fn simple_test() {
+        let cell = HzrdCell::new_in(String::from("hello"), SharedDomain::new());
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                while *cell.read() != "32" {
+                    std::hint::spin_loop();
+                }
+                cell.set(String::from("world"));
+            });
+
+            for string in (0..40).map(|i| i.to_string()) {
+                s.spawn(|| cell.set(string));
+            }
+        });
+    }
+
+    #[ignore]
+    #[test]
+    fn stress_hzrd_ptr() {
+        let cell = HzrdCell::new(String::new());
+        let barrier = std::sync::Barrier::new(2);
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                barrier.wait();
+                let _hzrd_ptrs: Vec<_> = (0..100).map(|_| cell.domain.hzrd_ptr()).collect();
+            });
+
+            s.spawn(|| {
+                barrier.wait();
+                for _ in 0..100 {
+                    cell.set(String::from("Hello world"));
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn stress_test_read() {
+        let cell = HzrdCell::new(String::new());
+        let barrier = std::sync::Barrier::new(2);
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                barrier.wait();
+                for _ in 0..40 {
+                    let _ = cell.read();
+                }
+            });
+
+            s.spawn(|| {
+                barrier.wait();
+                for _ in 0..40 {
+                    cell.set(String::from("Hello world"));
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn holding_handles() {
+        let cell = HzrdCell::new_in(String::from("hello"), SharedDomain::new());
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(1));
+                let _handles: Vec<_> = (0..40).map(|_| cell.read()).collect();
+            });
+
+            for string in (0..40).map(|i| i.to_string()) {
+                s.spawn(|| cell.set(string));
+            }
+        });
     }
 }
