@@ -514,7 +514,7 @@ mod tests {
         let _handle_1 = val_1.read();
         val_1.set(1);
 
-        assert_eq!(val_2.domain.retired.lock().unwrap().len(), 1);
+        assert_eq!(val_2.domain.number_of_retired_ptrs(), 1);
 
         drop(_handle_1);
     }
@@ -583,10 +583,10 @@ mod tests {
     #[test]
     fn retirement() {
         let cell = HzrdCell::new_in(String::new(), SharedDomain::new());
-        assert_eq!(cell.domain.hzrd.count(), 0, "{:?}", cell.domain.hzrd);
+        assert_eq!(cell.domain.number_of_hzrd_ptrs(), 0, "{:?}", cell.domain);
 
         let _handle_1 = cell.read();
-        assert_eq!(cell.domain.hzrd.count(), 1, "{:?}", cell.domain.hzrd);
+        assert_eq!(cell.domain.number_of_hzrd_ptrs(), 1, "{:?}", cell.domain);
 
         cell.set("Hello world".into());
         assert_eq!(cell.domain.number_of_retired_ptrs(), 1);
@@ -594,7 +594,7 @@ mod tests {
         // ------------
 
         let _handle_2 = cell.read();
-        assert_eq!(cell.domain.hzrd.count(), 2, "{:?}", cell.domain.hzrd);
+        assert_eq!(cell.domain.number_of_hzrd_ptrs(), 2, "{:?}", cell.domain);
 
         cell.set("Pizza world".into());
         assert_eq!(cell.domain.number_of_retired_ptrs(), 2);
@@ -633,7 +633,7 @@ mod tests {
             cell.domain.number_of_retired_ptrs(),
             1,
             "Retired ptrs: {:?}",
-            cell.domain.retired,
+            cell.domain,
         );
 
         cell.just_set([7, 8, 9]);
@@ -641,7 +641,7 @@ mod tests {
             cell.domain.number_of_retired_ptrs(),
             2,
             "Retired ptrs: {:?}",
-            cell.domain.retired,
+            cell.domain,
         );
 
         cell.reclaim();
@@ -649,7 +649,7 @@ mod tests {
             cell.domain.number_of_retired_ptrs(),
             0,
             "Retired ptrs: {:?}",
-            cell.domain.retired,
+            cell.domain,
         );
     }
 
