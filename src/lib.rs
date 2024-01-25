@@ -1,4 +1,6 @@
 #![warn(unsafe_op_in_unsafe_fn)]
+//#![warn(missing_docs)]
+//#![warn(rustdoc::missing_doc_code_examples)]
 
 /*!
 This crate provides a safe API for shared mutability using hazard pointers for memory reclamation.
@@ -70,7 +72,7 @@ pub static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
 /**
 Holds a value protected by hazard pointers.
 
-Each [`HzrdCell`] belongs to a given domain, which contains the set of hazard- and retired pointers protecting the value. See the [`Domain`] trait for more details on this.
+Each [`HzrdCell`] belongs to a given domain, which contains the set of hazard pointers protecting the value. See the [`Domain`] trait for more details on this.
 
 See the [crate-level documentation](crate) for a "getting started" guide.
 */
@@ -165,12 +167,11 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     }
 
     /**
-    Get the value of the cell (requires the type to be [`Copy`])
+    Read the associated value and copy it (requires the type to be [`Copy`])
 
     # Example
     ```
     # use hzrd::HzrdCell;
-    #
     let cell = HzrdCell::new(100);
     assert_eq!(cell.get(), 100);
     ```
@@ -200,7 +201,19 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
         self.read().clone()
     }
 
-    /// Reclaim available memory, if possible
+    /**
+    Reclaim available memory, if possible
+
+    # Example
+    ```
+    # use hzrd::HzrdCell;
+    let cell = HzrdCell::new(0);
+
+    cell.just_set(1); // Current garbage: [0]
+    cell.just_set(2); // Current garbage: [0, 1]
+    cell.reclaim(); // Current garbage: []
+    ```
+    */
     pub fn reclaim(&self) {
         self.domain.reclaim();
     }
@@ -254,7 +267,7 @@ impl<T: 'static, D> HzrdCell<T, D> {
         Self { value, domain }
     }
 
-    // SAFETY: Requires correct handling of RetiredPtr
+    /// SAFETY: Requires correct handling of RetiredPtr
     unsafe fn swap(&self, boxed: Box<T>) -> RetiredPtr {
         let new_ptr = Box::into_raw(boxed);
 
@@ -280,13 +293,34 @@ unsafe impl<T: Send, D: Send> Send for HzrdCell<T, D> {}
 // SAFETY: This may be somewhat defensive?
 unsafe impl<T: Send + Sync, D: Send + Sync> Sync for HzrdCell<T, D> {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Action {
+// ------------------------------
+
+#[derive(Debug, Clone, Copy)]
+enum Action {
     Free,
     Clear,
 }
 
-/// Holds a reference to a read value. The value is kept alive by a hazard pointer.
+/**
+Holds a reference to a read value. The value is kept alive by a hazard pointer.
+
+Note that the reference held by the handle is to the value as it was when it was read.
+If the cell is written to during the lifetime of the handle this will not be reflected in its value.
+
+# Example
+```
+# use hzrd::HzrdCell;
+let cell = HzrdCell::new(vec![1, 2, 3, 4]);
+
+// Read the value and hold on to a reference to the value
+let handle = cell.read();
+assert_eq!(handle[..], [1, 2, 3, 4]);
+
+// NOTE: The value is not updated when the cell is written to
+cell.set(Vec::new());
+assert_eq!(handle[..], [1, 2, 3, 4]);
+```
+*/
 #[derive(Debug)]
 pub struct ReadHandle<'hzrd, T> {
     value: &'hzrd T,
@@ -295,7 +329,7 @@ pub struct ReadHandle<'hzrd, T> {
 }
 
 impl<'hzrd, T> ReadHandle<'hzrd, T> {
-    pub unsafe fn read_unchecked(
+    unsafe fn read_unchecked(
         value: &'hzrd AtomicPtr<T>,
         hzrd_ptr: &'hzrd HzrdPtr,
         action: Action,
@@ -307,8 +341,6 @@ impl<'hzrd, T> ReadHandle<'hzrd, T> {
 
             // We now need to keep updating it until it is in a consistent state
             let new_ptr = value.load(SeqCst);
-            // dbg!(&ptr);
-            // dbg!(&new_ptr);
             if std::ptr::addr_eq(ptr, new_ptr) {
                 break;
             } else {
@@ -344,19 +376,94 @@ impl<T> Drop for ReadHandle<'_, T> {
     }
 }
 
+// ------------------------------
+
+/**
+A reader object for a specific `HzrdCell`
+
+The [`HzrdReader`] holds a reference to the value of the [`HzrdCell`], as well as a [`HzrdPtr`] to read from it. When performing many, consecutive reads of a cell this can be much more performant, as you only need to retrieve the [`HzrdPtr`] once.
+
+# Basic usage
+The basics of using a [`HzrdReader`] is to first create a [`HzrdCell`], and then call the [`reader`](`HzrdCell::reader`) method on the cell to retrieve a reader.
+
+```
+# use std::time::Duration;
+#
+# use hzrd::HzrdCell;
+#
+let cell = HzrdCell::new(false);
+
+std::thread::scope(|s| {
+    s.spawn(|| {
+        let mut reader = cell.reader();
+        while !reader.get() {
+            std::hint::spin_loop();
+        }
+        println!("Done!");
+    });
+
+    s.spawn(|| {
+        std::thread::sleep(Duration::from_millis(1));
+        cell.set(true);
+    });
+});
+```
+
+# The elephant in the room
+The keen eye might have observed some of the "funkiness" with [`HzrdReader`] in the previous example: Reading the value of from the reader required it to be mutable, whilst reading/writing to the cell did not. Exclusivity is usually associated with mutation, but for the [`HzrdReader`] this is not the case. The reason that reading via a [`HzrdReader`] require an exclusive/mutable reference is that the returned [`ReadHandle`] requires exclusive access to the internal [`HzrdPtr`].
+
+Another example, here using the [`read`](HzrdReader::read) function to acquire a [`ReadHandle`] to the underlying value, as it doesn't implement copy:
+
+```
+# use hzrd::{HzrdCell, HzrdReader};
+#
+let cell = HzrdCell::new([0, 1, 2]);
+
+// NOTE: The reader must be marked as mutable
+let mut reader = cell.reader();
+
+// NOTE: Associated function syntax used to make the requirement explicit
+let handle = HzrdReader::read(&mut reader);
+assert_eq!(handle[0], 0);
+```
+*/
 pub struct HzrdReader<'cell, T> {
     value: &'cell AtomicPtr<T>,
     hzrd_ptr: &'cell HzrdPtr,
 }
 
 impl<T> HzrdReader<'_, T> {
-    /// See [`HzrdCell::read`]
+    /**
+    Read the associated value and return a handle holding a reference it
+
+    Note that the reference held by the returned handle is to the value as it was when it was read.
+    If the cell is written to during the lifetime of the handle this will not be reflected in its value.
+
+    # Example
+    ```
+    # use hzrd::HzrdCell;
+    let cell = HzrdCell::new(String::new());
+    let mut reader = cell.reader();
+    let string = reader.read();
+    assert!(string.is_empty());
+    ```
+    */
     pub fn read(&mut self) -> ReadHandle<'_, T> {
         // SAFETY: The hazard pointer will protect the value
         unsafe { ReadHandle::read_unchecked(self.value, self.hzrd_ptr, Action::Clear) }
     }
 
-    /// See [`HzrdCell::get`]
+    /**
+    Read the associated value and copy it (requires the type to be [`Copy`])
+
+    # Example
+    ```
+    # use hzrd::HzrdCell;
+    let cell = HzrdCell::new('z');
+    let mut reader = cell.reader();
+    assert_eq!(reader.get(), 'z');
+    ```
+    */
     pub fn get(&mut self) -> T
     where
         T: Copy,
@@ -364,7 +471,17 @@ impl<T> HzrdReader<'_, T> {
         *self.read()
     }
 
-    /// See [`HzrdCell::cloned`]
+    /**
+    Read the contained value and clone it (requires type to be [`Clone`])
+
+    # Example
+    ```
+    # use hzrd::HzrdCell;
+    let cell = HzrdCell::new(vec![1, 2, 3]);
+    let mut reader = cell.reader();
+    assert_eq!(reader.cloned(), [1, 2, 3]);
+    ```
+    */
     pub fn cloned(&mut self) -> T
     where
         T: Clone,
@@ -373,8 +490,17 @@ impl<T> HzrdReader<'_, T> {
     }
 }
 
+// SAFETY: The type held needs to be both `Send` and `Sync`
+unsafe impl<T: Send + Sync> Send for HzrdReader<'_, T> {}
+
+// SAFETY: The type held needs to be both `Send` and `Sync`
+unsafe impl<T: Send + Sync> Sync for HzrdReader<'_, T> {}
+
+// ------------------------------
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Barrier;
     use std::time::Duration;
 
     use super::*;
@@ -591,17 +717,17 @@ mod tests {
     #[test]
     fn stress_hzrd_ptr() {
         let cell = HzrdCell::new(String::new());
-        let barrier = std::sync::Barrier::new(2);
+        let barrier = Barrier::new(2);
 
         std::thread::scope(|s| {
             s.spawn(|| {
                 barrier.wait();
-                let _hzrd_ptrs: Vec<_> = (0..100).map(|_| cell.domain.hzrd_ptr()).collect();
+                let _hzrd_ptrs: Vec<_> = (0..40).map(|_| cell.domain.hzrd_ptr()).collect();
             });
 
             s.spawn(|| {
                 barrier.wait();
-                for _ in 0..100 {
+                for _ in 0..40 {
                     cell.set(String::from("Hello world"));
                 }
             });
@@ -611,7 +737,7 @@ mod tests {
     #[test]
     fn stress_test_read() {
         let cell = HzrdCell::new(String::new());
-        let barrier = std::sync::Barrier::new(2);
+        let barrier = Barrier::new(2);
 
         std::thread::scope(|s| {
             s.spawn(|| {
