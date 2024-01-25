@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicPtr, Ordering::*};
+use std::sync::atomic::{AtomicPtr, Ordering::SeqCst};
 
 #[derive(Debug)]
 pub struct Node<T> {
@@ -28,11 +28,11 @@ impl<T> SharedStack<T> {
     pub fn push(&self, val: T) -> &T {
         let node = Box::into_raw(Box::new(Node::new(val)));
         loop {
-            let old_top = self.top.load(Acquire);
-            unsafe { &*node }.next.store(old_top, Release);
+            let old_top = self.top.load(SeqCst);
+            unsafe { &*node }.next.store(old_top, SeqCst);
             if self
                 .top
-                .compare_exchange(old_top, node, AcqRel, Relaxed)
+                .compare_exchange(old_top, node, SeqCst, SeqCst)
                 .is_ok()
             {
                 break;
@@ -43,7 +43,7 @@ impl<T> SharedStack<T> {
 
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
-            next: AtomicPtr::new(self.top.load(Acquire)),
+            next: AtomicPtr::new(self.top.load(SeqCst)),
             _marker: PhantomData,
         }
     }
@@ -79,9 +79,9 @@ impl<'t, T> IntoIterator for &'t SharedStack<T> {
 
 impl<T> Drop for SharedStack<T> {
     fn drop(&mut self) {
-        let mut current = self.top.load(Relaxed);
+        let mut current = self.top.load(SeqCst);
         while !current.is_null() {
-            let next = unsafe { (*current).next.load(Relaxed) };
+            let next = unsafe { (*current).next.load(SeqCst) };
             unsafe { drop(Box::from_raw(current)) };
             current = next;
         }
@@ -98,13 +98,13 @@ impl<'t, T> Iterator for Iter<'t, T> {
     type Item = &'t T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let next = self.next.load(Acquire);
+        let next = self.next.load(SeqCst);
         if next.is_null() {
             return None;
         }
         let Node { val, next } = unsafe { &*next };
-        let new_next = next.load(Acquire);
-        self.next.store(new_next, Release);
+        let new_next = next.load(SeqCst);
+        self.next.store(new_next, SeqCst);
         Some(val)
     }
 }

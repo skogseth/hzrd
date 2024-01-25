@@ -307,6 +307,8 @@ impl<'hzrd, T> ReadHandle<'hzrd, T> {
 
             // We now need to keep updating it until it is in a consistent state
             let new_ptr = value.load(SeqCst);
+            // dbg!(&ptr);
+            // dbg!(&new_ptr);
             if std::ptr::addr_eq(ptr, new_ptr) {
                 break;
             } else {
@@ -542,7 +544,50 @@ mod tests {
         });
     }
 
-    #[ignore]
+    #[test]
+    fn read_unchecked_2() {
+        let cell = HzrdCell::new_in(String::from("hello"), SharedDomain::new());
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let value = &cell.value;
+                let hzrd_ptr = cell.domain.hzrd_ptr();
+                while unsafe { &*ReadHandle::read_unchecked(value, hzrd_ptr, Action::Free) } != "32"
+                {
+                    std::hint::spin_loop();
+                }
+                cell.set(String::from("world"));
+            });
+
+            for string in (0..40).map(|i| i.to_string()) {
+                s.spawn(|| cell.set(string));
+            }
+        });
+    }
+
+    #[test]
+    fn read_unchecked_3() {
+        let cell = HzrdCell::new_in(0, SharedDomain::new());
+
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let value = &cell.value;
+                let hzrd_ptr = cell.domain.hzrd_ptr();
+                while unsafe { *ReadHandle::read_unchecked(value, hzrd_ptr, Action::Free) } != 32 {
+                    std::hint::spin_loop();
+                }
+                cell.set(-1);
+            });
+
+            for i in 0..40 {
+                let cell = &cell;
+                s.spawn(move || {
+                    cell.set(i);
+                });
+            }
+        });
+    }
+
     #[test]
     fn stress_hzrd_ptr() {
         let cell = HzrdCell::new(String::new());

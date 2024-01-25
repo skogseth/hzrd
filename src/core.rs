@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::collections::BTreeSet;
 use std::ptr::{addr_of, NonNull};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
@@ -195,8 +196,8 @@ impl HzrdPtrs {
         self.0.iter().count()
     }
 
-    pub fn contains(&self, addr: usize) -> bool {
-        self.0.iter().any(|node| node.get() == addr)
+    pub fn iter(&self) -> impl Iterator<Item = &HzrdPtr> {
+        self.0.iter()
     }
 
     pub fn all_available(&self) -> bool {
@@ -249,7 +250,10 @@ impl RetiredPtrs {
     }
 
     pub fn reclaim(&mut self, hzrd_ptrs: &HzrdPtrs) {
-        self.0.retain(|p| hzrd_ptrs.contains(p.addr()));
+        let hzrd_ptrs: BTreeSet<_> = hzrd_ptrs.iter().map(HzrdPtr::get).collect();
+        // dbg!(&hzrd_ptrs);
+        // dbg!(&self);
+        self.0.retain(|p| hzrd_ptrs.contains(&p.addr()));
     }
 
     pub fn is_empty(&self) -> bool {
@@ -318,7 +322,8 @@ mod tests {
 
         let hzrd_ptr = domain.hzrd_ptr();
         unsafe { hzrd_ptr.store(ptr.as_ptr()) };
-        assert!(domain.hzrd.contains(ptr.as_ptr() as usize));
+        let set: BTreeSet<_> = domain.hzrd.iter().map(HzrdPtr::get).collect();
+        assert!(set.contains(&(ptr.as_ptr() as usize)));
 
         domain.retire(unsafe { RetiredPtr::new(ptr) });
     }
