@@ -7,13 +7,15 @@ use std::sync::{Arc, Mutex};
 
 use crate::stack::SharedStack;
 
+// -------------------------------------
+
 /**
 A trait describing a hazard pointer domain
 
 A hazard pointer domain contains a set of given hazard pointers. A value protected by hazard pointers belong to a given domain. When the value is swapped the "swapped-out-value" should be retired to the domain associated with the value, such that it is properly cleaned up when there are no more hazard pointers guarding the reclamation of the value.
 
 # Safety
-The list of hazard pointers and retired pointers should, in general, not be mutated outside of these functions (e.g. by removing elements from the list).
+Implementing `Domain` is marked `unsafe` as a correct implementation is relied upon by the types of this crate. A sound implementation of `Domain` requires the type to only free [`RetiredPtr`]s passed in via [`retire`](`Domain::retire`)/[`just_retire`](`Domain::just_retire`) if no [`HzrdPtr`]s given out by this function is not protecting the value. A good implementation should free these pointers when both [`reclaim`](`Domain::reclaim`) is called, as well as after updating the value in [`retire`](`Domain::retire`).
 */
 pub unsafe trait Domain {
     /**
@@ -62,6 +64,8 @@ deref_impl!(<D: Domain> Domain for &D);
 deref_impl!(<D: Domain> Domain for Rc<D>);
 deref_impl!(<D: Domain> Domain for Arc<D>);
 
+// -------------------------------------
+
 #[derive(Debug)]
 pub struct SharedDomain {
     pub(crate) hzrd: HzrdPtrs,
@@ -105,6 +109,8 @@ unsafe impl Domain for SharedDomain {
         retired_ptrs.reclaim(&self.hzrd);
     }
 
+    // -------------------------------------
+
     // Override this for (hopefully) improved performance
     fn retire(&self, ret_ptr: RetiredPtr) {
         // Grab the lock to retired pointers
@@ -124,12 +130,14 @@ unsafe impl Domain for SharedDomain {
 
 // TODO: Introduce LocalDomain (`Send` but not `Sync`, use UnsafeCell + LinkedList & Vec)
 
+// -------------------------------------
+
 fn dummy_addr() -> usize {
     static DUMMY: u8 = 0;
     addr_of!(DUMMY) as usize
 }
 
-/// Holds some address that is currently used (may be null)
+/// Holds some address that is currently used
 pub struct HzrdPtr(AtomicUsize);
 
 impl HzrdPtr {
@@ -139,10 +147,6 @@ impl HzrdPtr {
 
     pub fn get(&self) -> usize {
         self.0.load(SeqCst)
-    }
-
-    pub fn is_available(&self) -> bool {
-        self.0.load(SeqCst) == 0
     }
 
     pub fn try_take(&self) -> Option<&Self> {
@@ -171,16 +175,24 @@ impl std::fmt::Debug for HzrdPtr {
     }
 }
 
+impl Default for HzrdPtr {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// -------------------------------------
+
 #[derive(Debug)]
-pub struct HzrdPtrs(SharedStack<HzrdPtr>);
+pub(crate) struct HzrdPtrs(SharedStack<HzrdPtr>);
 
 impl HzrdPtrs {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self(SharedStack::new())
     }
 
     /// Get a new HzrdPtr (this may allocate a new node in the list)
-    pub fn get(&self) -> &HzrdPtr {
+    pub(crate) fn get(&self) -> &HzrdPtr {
         // Important to only grab shared references to the HzrdPtr's
         // as others may be looking at them
         for node in self.0.iter() {
@@ -192,16 +204,13 @@ impl HzrdPtrs {
         self.0.push(HzrdPtr::new())
     }
 
-    pub fn count(&self) -> usize {
-        self.0.iter().count()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &HzrdPtr> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &HzrdPtr> {
         self.0.iter()
     }
 
-    pub fn all_available(&self) -> bool {
-        self.0.iter().all(|node| node.is_available())
+    #[cfg(test)]
+    pub(crate) fn count(&self) -> usize {
+        self.0.iter().count()
     }
 }
 
@@ -210,6 +219,8 @@ impl Default for HzrdPtrs {
         Self::new()
     }
 }
+
+// -------------------------------------
 
 #[derive(Debug)]
 pub struct RetiredPtr {
@@ -237,30 +248,33 @@ impl Drop for RetiredPtr {
 unsafe impl Send for RetiredPtr {}
 unsafe impl Sync for RetiredPtr {}
 
+// -------------------------------------
+
 #[derive(Debug)]
-pub struct RetiredPtrs(Vec<RetiredPtr>);
+pub(crate) struct RetiredPtrs(Vec<RetiredPtr>);
 
 impl RetiredPtrs {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self(Vec::new())
     }
 
-    pub fn add(&mut self, val: RetiredPtr) {
+    pub(crate) fn add(&mut self, val: RetiredPtr) {
         self.0.push(val);
     }
 
-    pub fn reclaim(&mut self, hzrd_ptrs: &HzrdPtrs) {
+    pub(crate) fn reclaim(&mut self, hzrd_ptrs: &HzrdPtrs) {
         let hzrd_ptrs: BTreeSet<_> = hzrd_ptrs.iter().map(HzrdPtr::get).collect();
         // dbg!(&hzrd_ptrs);
         // dbg!(&self);
         self.0.retain(|p| hzrd_ptrs.contains(&p.addr()));
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
         self.0.len()
     }
 }
@@ -270,6 +284,8 @@ impl Default for RetiredPtrs {
         Self::new()
     }
 }
+
+// -------------------------------------
 
 #[cfg(test)]
 mod tests {

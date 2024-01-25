@@ -1,6 +1,7 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 //#![warn(missing_docs)]
 //#![warn(rustdoc::missing_doc_code_examples)]
+#![allow(clippy::missing_safety_doc)]
 
 /*!
 This crate provides a safe API for shared mutability using hazard pointers for memory reclamation.
@@ -379,7 +380,7 @@ impl<T> Drop for ReadHandle<'_, T> {
 // ------------------------------
 
 /**
-A reader object for a specific `HzrdCell`
+A reader object for a specific [`HzrdCell`]
 
 The [`HzrdReader`] holds a reference to the value of the [`HzrdCell`], as well as a [`HzrdPtr`] to read from it. When performing many, consecutive reads of a cell this can be much more performant, as you only need to retrieve the [`HzrdPtr`] once.
 
