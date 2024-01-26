@@ -183,21 +183,23 @@ impl HzrdPtr {
     }
 }
 
-impl std::fmt::Debug for HzrdPtr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HzrdPtr({:#x})", self.0.load(SeqCst))
-    }
-}
-
 impl Default for HzrdPtr {
     fn default() -> Self {
         Self::new()
     }
 }
 
+impl std::fmt::Debug for HzrdPtr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HzrdPtr({:#x})", self.0.load(SeqCst))
+    }
+}
+
+unsafe impl Send for HzrdPtr {}
+unsafe impl Sync for HzrdPtr {}
+
 // -------------------------------------
 
-#[derive(Debug)]
 pub struct RetiredPtr {
     ptr: NonNull<dyn Any>,
 }
@@ -217,6 +219,12 @@ impl Drop for RetiredPtr {
     fn drop(&mut self) {
         // SAFETY: No reference to this when dropped (and always heap allocated)
         let _ = unsafe { Box::from_raw(self.ptr.as_ptr()) };
+    }
+}
+
+impl std::fmt::Debug for RetiredPtr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RetiredPtr({:#x})", self.addr())
     }
 }
 
