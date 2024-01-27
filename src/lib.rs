@@ -63,7 +63,7 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering::SeqCst};
 
-use core::{Domain, HzrdPtr, RetiredPtr, SharedDomain};
+use crate::core::{Domain, HzrdPtr, RetiredPtr, SharedDomain};
 
 pub static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
 
@@ -368,10 +368,10 @@ impl<'hzrd, T> ReadHandle<'hzrd, T> {
 
             // We now need to keep updating it until it is in a consistent state
             let new_ptr = value.load(SeqCst);
-            if std::ptr::addr_eq(ptr, new_ptr) {
+            if ptr == new_ptr {
                 break;
             } else {
-                ptr = new_ptr
+                ptr = new_ptr;
             }
         }
 
