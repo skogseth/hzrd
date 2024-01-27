@@ -1,6 +1,6 @@
 [package]
 name = "hzrd"
-version = "0.0.4"
+version = "0.0.5"
 edition = "2021"
 authors = ["Herman Skogseth"]
 rust-version = "1.65"
