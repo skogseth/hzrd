@@ -66,6 +66,7 @@ deref_impl!(<D: Domain> Domain for Arc<D>);
 
 // -------------------------------------
 
+/// Shared, multithreaded domain
 #[derive(Debug)]
 pub struct SharedDomain {
     hzrd: SharedStack<HzrdPtr>,
@@ -73,6 +74,15 @@ pub struct SharedDomain {
 }
 
 impl SharedDomain {
+    /**
+    Construct a new, clean shared domain
+
+    # Example
+    ```
+    # use hzrd::core::SharedDomain;
+    let domain = SharedDomain::new();
+    ```
+    */
     pub const fn new() -> Self {
         Self {
             hzrd: SharedStack::new(),
@@ -81,12 +91,12 @@ impl SharedDomain {
     }
 
     #[cfg(test)]
-    pub fn number_of_hzrd_ptrs(&self) -> usize {
+    pub(crate) fn number_of_hzrd_ptrs(&self) -> usize {
         self.hzrd.iter().count()
     }
 
     #[cfg(test)]
-    pub fn number_of_retired_ptrs(&self) -> usize {
+    pub(crate) fn number_of_retired_ptrs(&self) -> usize {
         self.retired.lock().unwrap().len()
     }
 }
@@ -95,7 +105,7 @@ unsafe impl Domain for SharedDomain {
     fn hzrd_ptr(&self) -> &HzrdPtr {
         // Important to only grab shared references to the HzrdPtr's
         // as others may be looking at them
-        match self.hzrd.iter().find_map(|node| node.try_take()) {
+        match self.hzrd.iter().find_map(|node| node.try_acquire()) {
             Some(hzrd_ptr) => hzrd_ptr,
             None => self.hzrd.push(HzrdPtr::new()),
         }
@@ -155,30 +165,53 @@ fn dummy_addr() -> usize {
 pub struct HzrdPtr(AtomicUsize);
 
 impl HzrdPtr {
+    /// Create a new hazard pointer (it will already be acquired)
     pub fn new() -> Self {
         HzrdPtr(AtomicUsize::new(dummy_addr()))
     }
 
+    /// Get the value held by the hazard pointer
     pub fn get(&self) -> usize {
         self.0.load(SeqCst)
     }
 
-    pub fn try_take(&self) -> Option<&Self> {
+    /// Try to aquire the hazard pointer
+    pub fn try_acquire(&self) -> Option<&Self> {
         match self.0.compare_exchange(0, dummy_addr(), SeqCst, SeqCst) {
             Ok(_) => Some(self),
             Err(_) => None,
         }
     }
 
-    pub unsafe fn store<T>(&self, ptr: *mut T) {
+    /**
+    Protect the value behind this pointer
+
+    # Safety
+    - The caller must be the current "owner" of the hazard pointer
+    - The caller must assert that the ptr did not change before the value was stored
+    */
+    pub unsafe fn protect<T>(&self, ptr: *mut T) {
         self.0.store(ptr as usize, SeqCst);
     }
 
-    pub unsafe fn clear(&self) {
+    /**
+    Reset the hazard pointer
+
+    # Safety
+    - The caller must be the current "owner" of the hazard pointer
+    */
+    pub unsafe fn reset(&self) {
         self.0.store(dummy_addr(), SeqCst);
     }
 
-    pub unsafe fn free(&self) {
+    /**
+    Release the hazard pointer
+
+    # Safety
+    - The caller must be the current "owner" of the hazard pointer
+    - The hazard cell must be reaquired after calling this using [`try_acquire`](`HzrdPtr::try_acquire`)
+    */
+    pub unsafe fn release(&self) {
         self.0.store(0, SeqCst);
     }
 }
@@ -200,16 +233,24 @@ unsafe impl Sync for HzrdPtr {}
 
 // -------------------------------------
 
+/// A retired pointer that will free the underlying value on drop
 pub struct RetiredPtr {
     ptr: NonNull<dyn Any>,
 }
 
 impl RetiredPtr {
-    // SAFETY: Must point to heap-allocated value
+    /**
+    Create a new retired pointer
+
+    # Safety
+    - The input pointer must point to heap-allocated value.
+    - The pointer must be held alive until it is safe to drop
+    */
     pub unsafe fn new<T: 'static>(ptr: NonNull<T>) -> Self {
         RetiredPtr { ptr }
     }
 
+    /// Get the address of the retired pointer
     pub fn addr(&self) -> usize {
         self.ptr.as_ptr() as *mut () as usize
     }
@@ -241,12 +282,12 @@ mod tests {
     fn hzrd_ptr() {
         let mut value = String::from("Danger!");
         let hzrd_ptr = HzrdPtr::new();
-        unsafe { hzrd_ptr.store(&mut value) };
-        unsafe { hzrd_ptr.clear() };
-        unsafe { hzrd_ptr.store(&mut value) };
+        unsafe { hzrd_ptr.protect(&mut value) };
+        unsafe { hzrd_ptr.reset() };
+        unsafe { hzrd_ptr.protect(&mut value) };
 
-        unsafe { hzrd_ptr.free() };
-        unsafe { hzrd_ptr.store(&mut value) };
+        unsafe { hzrd_ptr.release() };
+        unsafe { hzrd_ptr.protect(&mut value) };
     }
 
     fn new_value<T>(value: T) -> NonNull<T> {
@@ -262,7 +303,7 @@ mod tests {
         let domain = SharedDomain::new();
 
         let hzrd_ptr = domain.hzrd_ptr();
-        unsafe { hzrd_ptr.store(value.as_ptr()) };
+        unsafe { hzrd_ptr.protect(value.as_ptr()) };
 
         domain.retire(unsafe { RetiredPtr::new(value) });
         assert_eq!(domain.number_of_retired_ptrs(), 1);
@@ -270,7 +311,7 @@ mod tests {
         domain.reclaim();
         assert_eq!(domain.number_of_retired_ptrs(), 1);
 
-        unsafe { hzrd_ptr.clear() };
+        unsafe { hzrd_ptr.reset() };
 
         domain.reclaim();
         assert_eq!(domain.number_of_retired_ptrs(), 0);
@@ -282,7 +323,7 @@ mod tests {
         let domain = SharedDomain::new();
 
         let hzrd_ptr = domain.hzrd_ptr();
-        unsafe { hzrd_ptr.store(ptr.as_ptr()) };
+        unsafe { hzrd_ptr.protect(ptr.as_ptr()) };
         let set: BTreeSet<_> = domain.hzrd.iter().map(HzrdPtr::get).collect();
         assert!(set.contains(&(ptr.as_ptr() as usize)));
 

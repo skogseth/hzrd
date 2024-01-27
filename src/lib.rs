@@ -1,7 +1,6 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 //#![warn(missing_docs)]
 //#![warn(rustdoc::missing_doc_code_examples)]
-#![allow(clippy::missing_safety_doc)]
 
 /*!
 This crate provides a safe API for shared mutability using hazard pointers for memory reclamation.
@@ -9,9 +8,7 @@ This crate provides a safe API for shared mutability using hazard pointers for m
 # HzrdCell
 The core API of this crate is the [`HzrdCell`], which provides an API reminiscent to that of the standard library's [`Cell`](std::cell::Cell)-type. However, [`HzrdCell`] allows shared mutation across multiple threads.
 
-The main advantage of [`HzrdCell`], compared to something like a [`Mutex`](std::sync::Mutex), is that reading and writing to the value is lock-free. This is offset by an increased memory use, an significant overhead and additional indirection.
-
-Reading the value of the cell, e.g. via the [`get`](HzrdCell::get) method, is lock-free. Writing to the value is instant, but there is some overhead following the swap which requires locking the metadata of the cell (to allow some synchronization of garbage collection between the cells). The main way of writing to the value is via the [`set`](HzrdCell::set) method. Here is an example of [`HzrdCell`] in use.
+The main advantage of [`HzrdCell`], compared to something like a [`Mutex`](std::sync::Mutex), is that reading and writing to the value is lock-free. This is offset by an increased memory use, an significant overhead and additional indirection. Here is an example of [`HzrdCell`] in use.
 
 ```
 use std::time::Duration;
@@ -76,6 +73,44 @@ Holds a value protected by hazard pointers.
 Each [`HzrdCell`] belongs to a given domain, which contains the set of hazard pointers protecting the value. See the [`Domain`] trait for more details on this.
 
 See the [crate-level documentation](crate) for a "getting started" guide.
+
+# Advanced usage
+The domain can, for example, be held in the cell itself. This means the cell will hold exclusive access to it, and the garbage associated with the domain will be cleaned up when the cell is dropped. This can be abused to delay all garbage collection for some limited time in order to do it all in bulk:
+
+```
+use hzrd::HzrdCell;
+use hzrd::core::SharedDomain;
+
+let cell = HzrdCell::new_in(0, SharedDomain::new());
+
+std::thread::scope(|s| {
+    // Let's see how quickly we can count to thirty
+    s.spawn(|| {
+        for i in 0..30 {
+            // Intentionally avoid all garbage collection
+            cell.just_set(i);
+        }
+    });
+
+    s.spawn(|| {
+        println!("Let's check what the value is! {}", cell.get());
+    });
+});
+```
+
+Another option is to have the domain stored in an [`Arc`](`std::sync::Arc`). Multiple cells can now share a single domain, but that domain (including all the associated garbage) will still be guaranteed to be cleaned up when all the cells are dropped.
+```
+use std::sync::Arc;
+
+use hzrd::HzrdCell;
+use hzrd::core::SharedDomain;
+
+let custom_domain = Arc::new(SharedDomain::new());
+let cell_1 = HzrdCell::new_in(0, Arc::clone(&custom_domain));
+let cell_2 = HzrdCell::new_in(false, Arc::clone(&custom_domain));
+# assert_eq!(cell_1.get(), 0);
+# assert_eq!(cell_2.get(), false);
+```
 */
 #[derive(Debug)]
 pub struct HzrdCell<T, D> {
@@ -87,17 +122,14 @@ impl<T: 'static> HzrdCell<T, &'static SharedDomain> {
     /**
     Construct a new [`HzrdCell`] with the given value in the default domain.
 
-    The default domain is a globally shared domain: A &'static to [`GLOBAL_SHARED_DOMAIN`]. This is the recommended way for constructing [`HzrdCell`]s unless you really know what you're doing, in which case you can use [`HzrdCell::new_in`] to construct in a custom domain.
+    The default domain is a globally shared domain: A &'static to [`GLOBAL_DOMAIN`]. This is the recommended way for constructing [`HzrdCell`]s unless you really know what you're doing, in which case you can use [`HzrdCell::new_in`] to construct in a custom domain.
 
-    The value passed into the function will be allocated on the heap via [`Box`], and is stored seperate from the metadata associated with the [`HzrdCell`].
+    The value held in the cell will be allocated on the heap via [`Box`], and is stored seperate from the metadata associated with the [`HzrdCell`].
 
     # Example
     ```
     # use hzrd::HzrdCell;
-    #
     let cell = HzrdCell::new(0);
-    #
-    # let mut cell = cell;
     # assert_eq!(cell.get(), 0);
     ```
     */
@@ -115,11 +147,8 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     # Example
     ```
     # use hzrd::HzrdCell;
-    #
     let cell = HzrdCell::new(0);
     cell.set(1);
-    #
-    # let mut cell = cell;
     # assert_eq!(cell.get(), 1);
     ```
     */
@@ -166,7 +195,7 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
         let hzrd_ptr = self.domain.hzrd_ptr();
 
         // SAFETY: The hazard pointer will protect the value
-        unsafe { ReadHandle::read_unchecked(&self.value, hzrd_ptr, Action::Free) }
+        unsafe { ReadHandle::read_unchecked(&self.value, hzrd_ptr, Action::Release) }
     }
 
     /**
@@ -192,7 +221,6 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     # Example
     ```
     # use hzrd::HzrdCell;
-    #
     let cell = HzrdCell::new([1, 2, 3]);
     assert_eq!(cell.cloned(), [1, 2, 3]);
     ```
@@ -210,6 +238,7 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     # Example
     ```
     # use hzrd::HzrdCell;
+    #
     let cell = HzrdCell::new(0);
 
     cell.just_set(1); // Current garbage: [0]
@@ -252,43 +281,12 @@ impl<T: 'static, D> HzrdCell<T, D> {
 
     The recommended way for most users to construct a [`HzrdCell`] is using the [`new`](`HzrdCell::new`) function, which uses a global, shared domain. This method is aimed at more advanced usage of this library.
 
-    The value passed into the function will be allocated on the heap via [`Box`], and is stored seperate from the metadata associated with the [`HzrdCell`].
+    The value held in the cell will be allocated on the heap via [`Box`], and is stored seperate from the metadata associated with the [`HzrdCell`].
 
-    # Examples
-    The domain can, for example, be held in the cell itself. This means the cell will hold exclusive access to it, and the garbage associated with the domain will be cleaned up when the cell is dropped. This can be abused to delay all garbage collection for some limited time in order to do it all in bulk:
     ```
-    use hzrd::HzrdCell;
-    use hzrd::core::SharedDomain;
-
+    # use hzrd::HzrdCell;
+    # use hzrd::core::SharedDomain;
     let cell = HzrdCell::new_in(0, SharedDomain::new());
-
-    std::thread::scope(|s| {
-        // Let's see how quickly we can count to thirty
-        s.spawn(|| {
-            for i in 0..30 {
-                // Intentionally avoid all garbage collection
-                cell.just_set(i);
-            }
-        });
-
-        s.spawn(|| {
-            println!("Let's check what the value is! {}", cell.get());
-        });
-    });
-    ```
-
-    Another option is to have the domain stored in an [`Arc`](`std::sync::Arc`). Multiple cells can now share a single domain, but that domain (including all the associated garbage) will still be guaranteed to be cleaned up when all the cells are dropped.
-    ```
-    use std::sync::Arc;
-
-    use hzrd::HzrdCell;
-    use hzrd::core::SharedDomain;
-
-    let custom_domain = Arc::new(SharedDomain::new());
-    let cell_1 = HzrdCell::new_in(0, Arc::clone(&custom_domain));
-    let cell_2 = HzrdCell::new_in(false, Arc::clone(&custom_domain));
-    # assert_eq!(cell_1.get(), 0);
-    # assert_eq!(cell_2.get(), false);
     ```
     */
     pub fn new_in(value: T, domain: D) -> Self {
@@ -326,8 +324,8 @@ unsafe impl<T: Send + Sync, D: Send + Sync> Sync for HzrdCell<T, D> {}
 
 #[derive(Debug, Clone, Copy)]
 enum Action {
-    Free,
-    Clear,
+    Reset,
+    Release,
 }
 
 /**
@@ -366,7 +364,7 @@ impl<'hzrd, T> ReadHandle<'hzrd, T> {
         let mut ptr = value.load(SeqCst);
         loop {
             // SAFETY: Non-null ptr
-            unsafe { hzrd_ptr.store(ptr) };
+            unsafe { hzrd_ptr.protect(ptr) };
 
             // We now need to keep updating it until it is in a consistent state
             let new_ptr = value.load(SeqCst);
@@ -399,8 +397,8 @@ impl<T> Drop for ReadHandle<'_, T> {
     fn drop(&mut self) {
         // SAFETY: We are dropping so `value` will never be accessed after this
         match self.action {
-            Action::Free => unsafe { self.hzrd_ptr.free() },
-            Action::Clear => unsafe { self.hzrd_ptr.clear() },
+            Action::Reset => unsafe { self.hzrd_ptr.reset() },
+            Action::Release => unsafe { self.hzrd_ptr.release() },
         }
     }
 }
@@ -479,7 +477,7 @@ impl<T> HzrdReader<'_, T> {
     */
     pub fn read(&mut self) -> ReadHandle<'_, T> {
         // SAFETY: The hazard pointer will protect the value
-        unsafe { ReadHandle::read_unchecked(self.value, self.hzrd_ptr, Action::Clear) }
+        unsafe { ReadHandle::read_unchecked(self.value, self.hzrd_ptr, Action::Reset) }
     }
 
     /**
@@ -700,35 +698,15 @@ mod tests {
     }
 
     #[test]
-    fn read_unchecked_2() {
-        let cell = HzrdCell::new_in(String::from("hello"), SharedDomain::new());
-
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                let value = &cell.value;
-                let hzrd_ptr = cell.domain.hzrd_ptr();
-                while unsafe { &*ReadHandle::read_unchecked(value, hzrd_ptr, Action::Free) } != "32"
-                {
-                    std::hint::spin_loop();
-                }
-                cell.set(String::from("world"));
-            });
-
-            for string in (0..40).map(|i| i.to_string()) {
-                s.spawn(|| cell.set(string));
-            }
-        });
-    }
-
-    #[test]
-    fn read_unchecked_3() {
+    fn read_unchecked() {
         let cell = HzrdCell::new_in(0, SharedDomain::new());
 
         std::thread::scope(|s| {
             s.spawn(|| {
                 let value = &cell.value;
                 let hzrd_ptr = cell.domain.hzrd_ptr();
-                while unsafe { *ReadHandle::read_unchecked(value, hzrd_ptr, Action::Free) } != 32 {
+                while unsafe { *ReadHandle::read_unchecked(value, hzrd_ptr, Action::Release) } != 32
+                {
                     std::hint::spin_loop();
                 }
                 cell.set(-1);
