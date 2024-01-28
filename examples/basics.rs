@@ -1,6 +1,6 @@
 use hzrd::HzrdCell;
 
-const N: usize = 1000;
+const N: usize = 1_000_000;
 
 fn main() {
     let cell = HzrdCell::new(None);
