@@ -132,7 +132,7 @@ impl Default for HzrdPtr {
 
 impl std::fmt::Debug for HzrdPtr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HzrdPtr({:#x})", self.0.load(SeqCst))
+        write!(f, "HzrdPtr({:#x})", self.0.load(Relaxed))
     }
 }
 
