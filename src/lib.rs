@@ -49,6 +49,9 @@ assert_eq!(state.get(), State::Finished);
 mod stack;
 
 pub mod core;
+pub mod domains;
+
+pub use crate::domains::{GlobalDomain, LocalDomain, SharedDomain};
 
 mod private {
     // We want to test the code in the readme
@@ -63,9 +66,9 @@ use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering::SeqCst};
 
-use crate::core::{Domain, HzrdPtr, RetiredPtr, SharedDomain};
+use crate::core::{Domain, HzrdPtr, RetiredPtr};
 
-pub static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
+// -------------------------------------
 
 /**
 Holds a value protected by hazard pointers.
@@ -78,8 +81,7 @@ See the [crate-level documentation](crate) for a "getting started" guide.
 The domain can, for example, be held in the cell itself. This means the cell will hold exclusive access to it, and the garbage associated with the domain will be cleaned up when the cell is dropped. This can be abused to delay all garbage collection for some limited time in order to do it all in bulk:
 
 ```
-use hzrd::HzrdCell;
-use hzrd::core::SharedDomain;
+use hzrd::{HzrdCell, SharedDomain};
 
 let cell = HzrdCell::new_in(0, SharedDomain::new());
 
@@ -102,8 +104,7 @@ Another option is to have the domain stored in an [`Arc`](`std::sync::Arc`). Mul
 ```
 use std::sync::Arc;
 
-use hzrd::HzrdCell;
-use hzrd::core::SharedDomain;
+use hzrd::{HzrdCell, SharedDomain};
 
 let custom_domain = Arc::new(SharedDomain::new());
 let cell_1 = HzrdCell::new_in(0, Arc::clone(&custom_domain));
@@ -118,11 +119,11 @@ pub struct HzrdCell<T, D> {
     domain: D,
 }
 
-impl<T: 'static> HzrdCell<T, &'static SharedDomain> {
+impl<T: 'static> HzrdCell<T, GlobalDomain> {
     /**
     Construct a new [`HzrdCell`] with the given value in the default domain.
 
-    The default domain is a globally shared domain: A &'static to [`GLOBAL_DOMAIN`]. This is the recommended way for constructing [`HzrdCell`]s unless you really know what you're doing, in which case you can use [`HzrdCell::new_in`] to construct in a custom domain.
+    The default domain is a globally shared domain, see [`GlobalDomain`] for more information on this domain. This is the recommended way for constructing [`HzrdCell`]s unless you really know what you're doing, in which case you can use [`HzrdCell::new_in`] to construct in a custom domain.
 
     The value held in the cell will be allocated on the heap via [`Box`], and is stored seperate from the metadata associated with the [`HzrdCell`].
 
@@ -134,7 +135,7 @@ impl<T: 'static> HzrdCell<T, &'static SharedDomain> {
     ```
     */
     pub fn new(value: T) -> Self {
-        Self::new_in(value, &GLOBAL_DOMAIN)
+        Self::new_in(value, GlobalDomain)
     }
 }
 
@@ -284,8 +285,7 @@ impl<T: 'static, D> HzrdCell<T, D> {
     The value held in the cell will be allocated on the heap via [`Box`], and is stored seperate from the metadata associated with the [`HzrdCell`].
 
     ```
-    # use hzrd::HzrdCell;
-    # use hzrd::core::SharedDomain;
+    # use hzrd::{HzrdCell, SharedDomain};
     let cell = HzrdCell::new_in(0, SharedDomain::new());
     ```
     */
@@ -527,36 +527,22 @@ unsafe impl<T: Send + Sync> Sync for HzrdReader<'_, T> {}
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Barrier;
+    use std::sync::{Arc, Barrier};
     use std::time::Duration;
 
     use super::*;
 
     #[test]
-    fn global_domain() {
-        let val_1 = HzrdCell::new(0);
-        let val_2 = HzrdCell::new(false);
-
-        let _handle_1 = val_1.read();
-        val_1.set(1);
-
-        assert_eq!(val_2.domain.number_of_retired_ptrs(), 1);
-
-        drop(_handle_1);
-    }
-
-    #[test]
-    fn shallow_drop_test() {
+    fn drop_test() {
+        // Shallow drop
         let _ = HzrdCell::new(0);
-    }
 
-    #[test]
-    fn deep_drop_test() {
+        // Deep drop
         let _ = HzrdCell::new(vec![1, 2, 3]);
     }
 
     #[test]
-    fn single() {
+    fn single_threaded() {
         let string = String::new();
         let cell = HzrdCell::new(string);
 
@@ -579,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn double() {
+    fn multi_threaded() {
         let string = String::new();
         let cell = HzrdCell::new(string);
 
@@ -604,6 +590,36 @@ mod tests {
 
         cell.reclaim();
         assert_eq!(cell.cloned(), "Hello world!");
+    }
+
+    #[test]
+    fn static_threads() {
+        let cell = Arc::new(HzrdCell::new(Vec::new()));
+
+        let cell_1 = Arc::clone(&cell);
+        let handle_1 = std::thread::spawn(move || {
+            let handle = cell_1.read();
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(handle.is_empty());
+        });
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        let cell_2 = Arc::clone(&cell);
+        let handle_2 = std::thread::spawn(move || {
+            let handle = cell_2.read();
+            assert!(handle.is_empty());
+            drop(handle);
+
+            let new_vec = vec![false, false, true];
+            cell_2.set(new_vec);
+        });
+
+        handle_1.join().unwrap();
+        handle_2.join().unwrap();
+
+        cell.reclaim();
+        assert_eq!(cell.read().as_slice(), [false, false, true]);
     }
 
     #[test]
