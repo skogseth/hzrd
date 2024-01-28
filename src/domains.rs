@@ -8,7 +8,50 @@ use crate::stack::SharedStack;
 // -------------------------------------
 
 static HAZARD_POINTERS: SharedStack<HzrdPtr> = SharedStack::new();
-static RETIRED_POINTERS: Mutex<Vec<RetiredPtr>> = Mutex::new(Vec::new());
+
+static SHARED_RETIRED_POINTERS: Mutex<Vec<RetiredPtr>> = Mutex::new(Vec::new());
+
+thread_local! {
+    static LOCAL_RETIRED_POINTERS: LocalRetiredPtrs = const { LocalRetiredPtrs::new() };
+}
+
+/**
+We need a special wrapper type to handle cleanup on closing threads.
+
+There is a potential for memory leaks if the drop function is not called, which can happen according to https://doc.rust-lang.org/std/thread/struct.LocalKey.html. It seems like we're in the clear, though.
+*/
+struct LocalRetiredPtrs(UnsafeCell<Vec<RetiredPtr>>);
+
+impl LocalRetiredPtrs {
+    const fn new() -> Self {
+        Self(UnsafeCell::new(Vec::new()))
+    }
+}
+
+impl Drop for LocalRetiredPtrs {
+    fn drop(&mut self) {
+        // We can actually use `get_mut` in here, nice!
+        let local_retired_ptrs = self.0.get_mut();
+
+        // Clean up any garbage that can be cleaned up
+        let hzrd_ptrs: BTreeSet<_> = HAZARD_POINTERS.iter().map(HzrdPtr::get).collect();
+        local_retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+
+        // If there's still garbage we send it to the shared pool
+        if !local_retired_ptrs.is_empty() {
+            let mut shared_retired_ptrs = SHARED_RETIRED_POINTERS.lock().unwrap();
+            shared_retired_ptrs.extend(local_retired_ptrs.drain(..));
+        }
+    }
+}
+
+impl std::fmt::Debug for LocalRetiredPtrs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut f = f.debug_tuple("LocalRetiredPtrs");
+        f.field(unsafe { &*self.0.get() });
+        f.finish()
+    }
+}
 
 /// Global, multithreaded domain
 pub struct GlobalDomain;
@@ -19,10 +62,18 @@ impl GlobalDomain {
         HAZARD_POINTERS.iter().count()
     }
 
+    /// Sort of a weird function:
+    /// It will return the number of retired pointer that this thread can potentially clean up
     #[cfg(test)]
     pub(crate) fn number_of_retired_ptrs(&self) -> usize {
-        let retired_ptrs = RETIRED_POINTERS.lock().unwrap();
-        retired_ptrs.len()
+        let shared = SHARED_RETIRED_POINTERS.lock().unwrap().len();
+
+        let local = LOCAL_RETIRED_POINTERS.with(|cell| {
+            let retired_ptrs = unsafe { &*cell.0.get() };
+            retired_ptrs.len()
+        });
+
+        shared + local
     }
 }
 
@@ -37,42 +88,43 @@ unsafe impl Domain for GlobalDomain {
     }
 
     fn just_retire(&self, ret_ptr: RetiredPtr) {
-        let mut retired_ptrs = RETIRED_POINTERS.lock().unwrap();
-        retired_ptrs.push(ret_ptr)
+        LOCAL_RETIRED_POINTERS.with(|cell| {
+            let retired_ptrs = unsafe { &mut *cell.0.get() };
+            retired_ptrs.push(ret_ptr)
+        })
     }
 
     fn reclaim(&self) {
-        // Try to aquire lock, exit if it is taken
-        let Ok(mut retired_ptrs) = RETIRED_POINTERS.try_lock() else {
-            return;
-        };
+        let hzrd_ptrs: BTreeSet<_> = HAZARD_POINTERS.iter().map(HzrdPtr::get).collect();
 
-        // Check if it's empty, no need to move forward otherwise
-        if retired_ptrs.is_empty() {
-            return;
+        if let Ok(mut retired_ptrs) = SHARED_RETIRED_POINTERS.try_lock() {
+            retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
         }
 
-        let hzrd_ptrs: BTreeSet<_> = HAZARD_POINTERS.iter().map(HzrdPtr::get).collect();
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+        LOCAL_RETIRED_POINTERS.with(|cell| {
+            let retired_ptrs = unsafe { &mut *cell.0.get() };
+            retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+        });
     }
 
     // -------------------------------------
 
     // Override this to avoid mutable aliasing
     fn retire(&self, ret_ptr: RetiredPtr) {
-        // Grab the lock to retired pointers
-        let mut retired_ptrs = RETIRED_POINTERS.lock().unwrap();
+        let hzrd_ptrs: BTreeSet<_> = HAZARD_POINTERS.iter().map(HzrdPtr::get).collect();
 
-        // And retire the given pointer
-        retired_ptrs.push(ret_ptr);
-
-        // Check if it's empty, no need to move forward otherwise
-        if retired_ptrs.is_empty() {
-            return;
+        if let Ok(mut retired_ptrs) = SHARED_RETIRED_POINTERS.try_lock() {
+            retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
         }
 
-        let hzrd_ptrs: BTreeSet<_> = HAZARD_POINTERS.iter().map(HzrdPtr::get).collect();
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+        LOCAL_RETIRED_POINTERS.with(|cell| {
+            let retired_ptrs = unsafe { &mut *cell.0.get() };
+
+            // And retire the given pointer
+            retired_ptrs.push(ret_ptr);
+
+            retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+        });
     }
 }
 
@@ -80,6 +132,8 @@ impl std::fmt::Debug for GlobalDomain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut f = f.debug_struct("GlobalDomain");
         f.field("hzrd", &HAZARD_POINTERS);
+        f.field("shared_retired", &SHARED_RETIRED_POINTERS);
+        f.field("local_retired", &LOCAL_RETIRED_POINTERS);
         f.finish_non_exhaustive()
     }
 }
