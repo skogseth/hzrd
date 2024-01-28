@@ -64,7 +64,7 @@ mod private {
 
 use std::ops::Deref;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicPtr, Ordering::SeqCst};
+use std::sync::atomic::{AtomicPtr, Ordering::*};
 
 use crate::core::{Domain, HzrdPtr, RetiredPtr};
 
@@ -367,7 +367,7 @@ impl<'hzrd, T> ReadHandle<'hzrd, T> {
             unsafe { hzrd_ptr.protect(ptr) };
 
             // We now need to keep updating it until it is in a consistent state
-            let new_ptr = value.load(SeqCst);
+            let new_ptr = value.load(Acquire);
             if ptr == new_ptr {
                 break;
             } else {
