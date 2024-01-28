@@ -49,6 +49,14 @@ assert_eq!(state.get(), State::Finished);
 mod stack;
 
 pub mod core;
+pub mod domains;
+
+#[rustfmt::skip]
+pub use crate::domains::{
+    GlobalDomain,
+    SharedDomain,
+    LocalDomain,
+};
 
 mod private {
     // We want to test the code in the readme
@@ -59,209 +67,13 @@ mod private {
 
 // ------------------------------------------
 
-use std::cell::UnsafeCell;
-use std::collections::{BTreeSet, LinkedList};
 use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering::SeqCst};
-use std::sync::Mutex;
 
 use crate::core::{Domain, HzrdPtr, RetiredPtr};
-use crate::stack::SharedStack;
-
-// ------------------------------------------
-
-/// Shared, multithreaded domain
-#[derive(Debug)]
-pub struct SharedDomain {
-    hzrd: SharedStack<HzrdPtr>,
-    retired: Mutex<Vec<RetiredPtr>>,
-}
-
-impl SharedDomain {
-    /**
-    Construct a new, clean shared domain
-
-    # Example
-    ```
-    # use hzrd::SharedDomain;
-    let domain = SharedDomain::new();
-    ```
-    */
-    pub const fn new() -> Self {
-        Self {
-            hzrd: SharedStack::new(),
-            retired: Mutex::new(Vec::new()),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn number_of_hzrd_ptrs(&self) -> usize {
-        self.hzrd.iter().count()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn number_of_retired_ptrs(&self) -> usize {
-        self.retired.lock().unwrap().len()
-    }
-}
-
-unsafe impl Domain for SharedDomain {
-    fn hzrd_ptr(&self) -> &HzrdPtr {
-        // Important to only grab shared references to the HzrdPtr's
-        // as others may be looking at them
-        match self.hzrd.iter().find_map(|node| node.try_acquire()) {
-            Some(hzrd_ptr) => hzrd_ptr,
-            None => self.hzrd.push(HzrdPtr::new()),
-        }
-    }
-
-    fn just_retire(&self, ret_ptr: RetiredPtr) {
-        self.retired.lock().unwrap().push(ret_ptr);
-    }
-
-    fn reclaim(&self) {
-        // Try to aquire lock, exit if it is taken
-        let Ok(mut retired_ptrs) = self.retired.try_lock() else {
-            return;
-        };
-
-        // Check if it's empty, no need to move forward otherwise
-        if retired_ptrs.is_empty() {
-            return;
-        }
-
-        let hzrd_ptrs: BTreeSet<_> = self.hzrd.iter().map(HzrdPtr::get).collect();
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
-    }
-
-    // -------------------------------------
-
-    // Override this for (hopefully) improved performance
-    fn retire(&self, ret_ptr: RetiredPtr) {
-        // Grab the lock to retired pointers
-        let mut retired_ptrs = self.retired.lock().unwrap();
-
-        // And retire the given pointer
-        retired_ptrs.push(ret_ptr);
-
-        // Check if it's empty, no need to move forward otherwise
-        if retired_ptrs.is_empty() {
-            return;
-        }
-
-        let hzrd_ptrs: BTreeSet<_> = self.hzrd.iter().map(HzrdPtr::get).collect();
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
-    }
-}
 
 // -------------------------------------
-
-use shared_cell::SharedCell;
-
-mod shared_cell {
-    pub(crate) struct SharedCell<T>(T);
-
-    impl<T> SharedCell<T> {
-        pub(crate) fn new(value: T) -> Self {
-            Self(value)
-        }
-
-        pub(crate) fn get(&self) -> &T {
-            &self.0
-        }
-    }
-}
-
-/// Local, singlethreaded domain
-#[derive(Debug)]
-pub struct LocalDomain {
-    // Important to only allow shared references to the HzrdPtr's
-    hzrd: UnsafeCell<LinkedList<SharedCell<HzrdPtr>>>,
-    retired: UnsafeCell<Vec<RetiredPtr>>,
-}
-
-impl LocalDomain {
-    /**
-    Construct a new, clean local domain
-
-    # Example
-    ```
-    # use hzrd::LocalDomain;
-    let domain = LocalDomain::new();
-    ```
-    */
-    pub const fn new() -> Self {
-        Self {
-            hzrd: UnsafeCell::new(LinkedList::new()),
-            retired: UnsafeCell::new(Vec::new()),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn number_of_hzrd_ptrs(&self) -> usize {
-        unsafe { &*self.hzrd.get() }.iter().count()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn number_of_retired_ptrs(&self) -> usize {
-        unsafe { &*self.retired.get() }.len()
-    }
-}
-
-unsafe impl Domain for LocalDomain {
-    fn hzrd_ptr(&self) -> &HzrdPtr {
-        {
-            let hzrd_ptrs = unsafe { &*self.hzrd.get() };
-
-            if let Some(hzrd_ptr) = hzrd_ptrs.iter().find_map(|node| node.get().try_acquire()) {
-                return hzrd_ptr;
-            }
-        }
-
-        let hzrd_ptrs = unsafe { &mut *self.hzrd.get() };
-        hzrd_ptrs.push_back(SharedCell::new(HzrdPtr::new()));
-        unsafe { hzrd_ptrs.back().unwrap_unchecked().get() }
-    }
-
-    fn just_retire(&self, ret_ptr: RetiredPtr) {
-        let retired_ptrs = unsafe { &mut *self.retired.get() };
-        retired_ptrs.push(ret_ptr);
-    }
-
-    fn reclaim(&self) {
-        let retired_ptrs = unsafe { &mut *self.retired.get() };
-        let hzrd_ptrs = unsafe { &*self.hzrd.get() };
-
-        let hzrd_ptrs: BTreeSet<_> = hzrd_ptrs
-            .iter()
-            .map(SharedCell::get)
-            .map(HzrdPtr::get)
-            .collect();
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
-    }
-
-    // -------------------------------------
-
-    // Override this for (hopefully) improved performance
-    fn retire(&self, ret_ptr: RetiredPtr) {
-        let retired_ptrs = unsafe { &mut *self.retired.get() };
-        let hzrd_ptrs = unsafe { &*self.hzrd.get() };
-
-        retired_ptrs.push(ret_ptr);
-
-        let hzrd_ptrs: BTreeSet<_> = hzrd_ptrs
-            .iter()
-            .map(SharedCell::get)
-            .map(HzrdPtr::get)
-            .collect();
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
-    }
-}
-
-// -------------------------------------
-
-pub static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
 
 /**
 Holds a value protected by hazard pointers.
@@ -312,11 +124,11 @@ pub struct HzrdCell<T, D> {
     domain: D,
 }
 
-impl<T: 'static> HzrdCell<T, &'static SharedDomain> {
+impl<T: 'static> HzrdCell<T, GlobalDomain> {
     /**
     Construct a new [`HzrdCell`] with the given value in the default domain.
 
-    The default domain is a globally shared domain: A &'static to [`GLOBAL_DOMAIN`]. This is the recommended way for constructing [`HzrdCell`]s unless you really know what you're doing, in which case you can use [`HzrdCell::new_in`] to construct in a custom domain.
+    The default domain is a globally shared domain, see [`GlobalDomain`] for more information on this domain. This is the recommended way for constructing [`HzrdCell`]s unless you really know what you're doing, in which case you can use [`HzrdCell::new_in`] to construct in a custom domain.
 
     The value held in the cell will be allocated on the heap via [`Box`], and is stored seperate from the metadata associated with the [`HzrdCell`].
 
@@ -328,7 +140,7 @@ impl<T: 'static> HzrdCell<T, &'static SharedDomain> {
     ```
     */
     pub fn new(value: T) -> Self {
-        Self::new_in(value, &GLOBAL_DOMAIN)
+        Self::new_in(value, GlobalDomain)
     }
 }
 
@@ -724,64 +536,6 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-
-    fn new_value<T>(value: T) -> NonNull<T> {
-        let boxed = Box::new(value);
-        let raw = Box::into_raw(boxed);
-        unsafe { NonNull::new_unchecked(raw) }
-    }
-
-    #[test]
-    fn shared_domain() {
-        let ptr = new_value(['a', 'b', 'c', 'd']);
-        let domain = SharedDomain::new();
-
-        let hzrd_ptr = domain.hzrd_ptr();
-        assert_eq!(domain.number_of_hzrd_ptrs(), 1);
-
-        unsafe { hzrd_ptr.protect(ptr.as_ptr()) };
-        let set: BTreeSet<_> = domain.hzrd.iter().map(HzrdPtr::get).collect();
-        assert!(set.contains(&(ptr.as_ptr() as usize)));
-
-        domain.retire(unsafe { RetiredPtr::new(ptr) });
-        assert_eq!(domain.number_of_retired_ptrs(), 1);
-
-        domain.reclaim();
-        assert_eq!(domain.number_of_retired_ptrs(), 1);
-
-        unsafe { hzrd_ptr.reset() };
-
-        domain.reclaim();
-        assert_eq!(domain.number_of_retired_ptrs(), 0);
-    }
-
-    #[test]
-    fn local_domain() {
-        let ptr = new_value(['a', 'b', 'c', 'd']);
-        let domain = LocalDomain::new();
-
-        let hzrd_ptr = domain.hzrd_ptr();
-        assert_eq!(domain.number_of_hzrd_ptrs(), 1);
-
-        unsafe { hzrd_ptr.protect(ptr.as_ptr()) };
-        let set: BTreeSet<_> = unsafe { &*domain.hzrd.get() }
-            .iter()
-            .map(SharedCell::get)
-            .map(HzrdPtr::get)
-            .collect();
-        assert!(set.contains(&(ptr.as_ptr() as usize)));
-
-        domain.retire(unsafe { RetiredPtr::new(ptr) });
-        assert_eq!(domain.number_of_retired_ptrs(), 1);
-
-        domain.reclaim();
-        assert_eq!(domain.number_of_retired_ptrs(), 1);
-
-        unsafe { hzrd_ptr.reset() };
-
-        domain.reclaim();
-        assert_eq!(domain.number_of_retired_ptrs(), 0);
-    }
 
     #[test]
     fn cell() {
