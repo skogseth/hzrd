@@ -12,7 +12,7 @@ static HAZARD_POINTERS: SharedStack<HzrdPtr> = SharedStack::new();
 static SHARED_RETIRED_POINTERS: Mutex<Vec<RetiredPtr>> = Mutex::new(Vec::new());
 
 thread_local! {
-    static LOCAL_RETIRED_POINTERS: LocalRetiredPtrs = const { LocalRetiredPtrs::new() };
+    static LOCAL_RETIRED_POINTERS: LocalRetiredPtrs = const { LocalRetiredPtrs(UnsafeCell::new(Vec::new())) };
 }
 
 /**
@@ -21,12 +21,6 @@ We need a special wrapper type to handle cleanup on closing threads.
 There is a potential for memory leaks if the drop function is not called, which can happen according to https://doc.rust-lang.org/std/thread/struct.LocalKey.html. It seems like we're in the clear, though.
 */
 struct LocalRetiredPtrs(UnsafeCell<Vec<RetiredPtr>>);
-
-impl LocalRetiredPtrs {
-    const fn new() -> Self {
-        Self(UnsafeCell::new(Vec::new()))
-    }
-}
 
 impl Drop for LocalRetiredPtrs {
     fn drop(&mut self) {
@@ -53,7 +47,7 @@ impl std::fmt::Debug for LocalRetiredPtrs {
     }
 }
 
-/// Global, multithreaded domain
+/// Globally shared, multithreaded domain
 pub struct GlobalDomain;
 
 impl GlobalDomain {
@@ -62,18 +56,12 @@ impl GlobalDomain {
         HAZARD_POINTERS.iter().count()
     }
 
-    /// Sort of a weird function:
-    /// It will return the number of retired pointer that this thread can potentially clean up
     #[cfg(test)]
     pub(crate) fn number_of_retired_ptrs(&self) -> usize {
-        let shared = SHARED_RETIRED_POINTERS.lock().unwrap().len();
-
-        let local = LOCAL_RETIRED_POINTERS.with(|cell| {
+        LOCAL_RETIRED_POINTERS.with(|cell| {
             let retired_ptrs = unsafe { &*cell.0.get() };
             retired_ptrs.len()
-        });
-
-        shared + local
+        })
     }
 }
 

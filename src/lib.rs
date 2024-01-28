@@ -51,12 +51,7 @@ mod stack;
 pub mod core;
 pub mod domains;
 
-#[rustfmt::skip]
-pub use crate::domains::{
-    GlobalDomain,
-    SharedDomain,
-    LocalDomain,
-};
+pub use crate::domains::{GlobalDomain, LocalDomain, SharedDomain};
 
 mod private {
     // We want to test the code in the readme
@@ -532,23 +527,10 @@ unsafe impl<T: Send + Sync> Sync for HzrdReader<'_, T> {}
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Barrier;
+    use std::sync::{Arc, Barrier};
     use std::time::Duration;
 
     use super::*;
-
-    #[test]
-    fn cell() {
-        let val_1 = HzrdCell::new(0);
-        let val_2 = HzrdCell::new(false);
-
-        let _handle_1 = val_1.read();
-        val_1.set(1);
-
-        assert_eq!(val_2.domain.number_of_retired_ptrs(), 1);
-
-        drop(_handle_1);
-    }
 
     #[test]
     fn drop_test() {
@@ -560,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn single() {
+    fn single_threaded() {
         let string = String::new();
         let cell = HzrdCell::new(string);
 
@@ -583,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn double() {
+    fn multi_threaded() {
         let string = String::new();
         let cell = HzrdCell::new(string);
 
@@ -611,7 +593,37 @@ mod tests {
     }
 
     #[test]
-    fn cell_and_retirement() {
+    fn static_threads() {
+        let cell = Arc::new(HzrdCell::new(Vec::new()));
+
+        let cell_1 = Arc::clone(&cell);
+        let handle_1 = std::thread::spawn(move || {
+            let handle = cell_1.read();
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(handle.is_empty());
+        });
+
+        std::thread::sleep(Duration::from_millis(100));
+
+        let cell_2 = Arc::clone(&cell);
+        let handle_2 = std::thread::spawn(move || {
+            let handle = cell_2.read();
+            assert!(handle.is_empty());
+            drop(handle);
+
+            let new_vec = vec![false, false, true];
+            cell_2.set(new_vec);
+        });
+
+        handle_1.join().unwrap();
+        handle_2.join().unwrap();
+
+        cell.reclaim();
+        assert_eq!(cell.read().as_slice(), [false, false, true]);
+    }
+
+    #[test]
+    fn retirement() {
         let cell = HzrdCell::new_in(String::new(), SharedDomain::new());
         assert_eq!(cell.domain.number_of_hzrd_ptrs(), 0, "{:?}", cell.domain);
 
