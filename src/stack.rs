@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicPtr, Ordering::SeqCst};
+use std::sync::atomic::{AtomicPtr, Ordering::*};
 
 #[derive(Debug)]
 pub struct Node<T> {
@@ -28,11 +28,11 @@ impl<T> SharedStack<T> {
     pub fn push(&self, val: T) -> &T {
         let node = Box::into_raw(Box::new(Node::new(val)));
         loop {
-            let old_top = self.top.load(SeqCst);
-            unsafe { &*node }.next.store(old_top, SeqCst);
+            let old_top = self.top.load(Acquire);
+            unsafe { &*node }.next.store(old_top, Release);
             if self
                 .top
-                .compare_exchange(old_top, node, SeqCst, SeqCst)
+                .compare_exchange(old_top, node, SeqCst, Relaxed)
                 .is_ok()
             {
                 break;
@@ -98,13 +98,13 @@ impl<'t, T> Iterator for Iter<'t, T> {
     type Item = &'t T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let next = self.next.load(SeqCst);
+        let next = self.next.load(Acquire);
         if next.is_null() {
             return None;
         }
         let Node { val, next } = unsafe { &*next };
-        let new_next = next.load(SeqCst);
-        self.next.store(new_next, SeqCst);
+        let new_next = next.load(Acquire);
+        self.next.store(new_next, Release);
         Some(val)
     }
 }

@@ -1,7 +1,8 @@
 use std::any::Any;
 use std::ptr::{addr_of, NonNull};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::*;
 use std::sync::Arc;
 
 // -------------------------------------
@@ -79,12 +80,12 @@ impl HzrdPtr {
 
     /// Get the value held by the hazard pointer
     pub fn get(&self) -> usize {
-        self.0.load(SeqCst)
+        self.0.load(Acquire)
     }
 
     /// Try to aquire the hazard pointer
     pub fn try_acquire(&self) -> Option<&Self> {
-        match self.0.compare_exchange(0, dummy_addr(), SeqCst, SeqCst) {
+        match self.0.compare_exchange(0, dummy_addr(), Relaxed, Relaxed) {
             Ok(_) => Some(self),
             Err(_) => None,
         }
@@ -98,7 +99,7 @@ impl HzrdPtr {
     - The caller must assert that the ptr did not change before the value was stored
     */
     pub unsafe fn protect<T>(&self, ptr: *mut T) {
-        self.0.store(ptr as usize, SeqCst);
+        self.0.store(ptr as usize, Release);
     }
 
     /**
@@ -108,7 +109,7 @@ impl HzrdPtr {
     - The caller must be the current "owner" of the hazard pointer
     */
     pub unsafe fn reset(&self) {
-        self.0.store(dummy_addr(), SeqCst);
+        self.0.store(dummy_addr(), Release);
     }
 
     /**
@@ -119,7 +120,7 @@ impl HzrdPtr {
     - The hazard cell must be reaquired after calling this using [`try_acquire`](`HzrdPtr::try_acquire`)
     */
     pub unsafe fn release(&self) {
-        self.0.store(0, SeqCst);
+        self.0.store(0, Release);
     }
 }
 
@@ -131,7 +132,7 @@ impl Default for HzrdPtr {
 
 impl std::fmt::Debug for HzrdPtr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HzrdPtr({:#x})", self.0.load(SeqCst))
+        write!(f, "HzrdPtr({:#x})", self.0.load(Relaxed))
     }
 }
 
