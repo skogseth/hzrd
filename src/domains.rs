@@ -1,3 +1,13 @@
+/*!
+Module containing various types implementing the [`Domain`](`crate::core::Domain`)-trait.
+
+The module has three core types:
+- [`GlobalDomain`]: A multithreaded, globally shared domain (default)
+- [`SharedDomain`]: A multithreaded, shared domain
+- [`LocalDomain`]: A singlethreaded, local domain
+
+The default domain used by [`HzrdCell`] is [`GlobalDomain`], which is the recommended domain for most applications.
+*/
 use std::cell::UnsafeCell;
 use std::collections::{BTreeSet, LinkedList};
 use std::sync::Mutex;
@@ -83,7 +93,46 @@ impl std::fmt::Debug for LocalRetiredPtrs {
     }
 }
 
-/// Globally shared, multithreaded domain
+/**
+A globally shared, multithreaded domain
+
+Here is a code example explaing a little bit of how it works:
+
+```
+use hzrd::{HzrdCell, GlobalDomain};
+
+// We here explicitly mark the use of the `GlobalDomain`
+let cell_1 = HzrdCell::new_in(0, GlobalDomain);
+
+// We usually just use the default constructor `HzrdCell::new`
+let cell_2 = HzrdCell::new(false);
+
+// We read the value of the two cells, holding on to the handle for now
+let _handle_1 = cell_1.read();
+let _handle_2 = cell_2.read();
+
+// The `GlobalDomain` now holds two hazard pointers
+// Both of which are at the moment in active use in `handle_1` and `handle_2`, respectively
+
+// We write some values to the cells, which will not be able to free the previous
+// values in the cell as there are references to these in `handle_1` and `handle_2`
+cell_1.set(1);
+cell_2.set(true);
+
+// The `GlobalDomain` now has the following garbage: ( 0, false )
+
+// Drop both handles, so garbage can (eventually) be freed
+drop(handle_1);
+drop(handle_2);
+
+// Free all garbage in the `GlobalDomain`
+cell_1.reclaim();
+
+// There is no need to call this on cell_2 as they both share the `GlobalDomain`.
+```
+
+Technically there is some more complexity to the garbage collection in `GlobalDomain`. Each thread holds its own garbage, as well as access to the shared garbage. If a thread closes down with garbage still remaining (it will attempt one last cleanup before closing), then that garbage will be placed in the shared garbage. Whenever a thread does garbage collection it will first try to clean up the local garbage it holds, followed by an attempt to clean up the shared garbage. However, since the shared garbage is locked by a [`Mutex`](`std::sync::Mutex`) it will only attempt to do so. If the shared garbage is locked by another thread it will simply skip it.
+*/
 pub struct GlobalDomain;
 
 impl GlobalDomain {
