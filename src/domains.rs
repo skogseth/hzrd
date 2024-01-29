@@ -13,6 +13,8 @@ static SHARED_RETIRED_POINTERS: Mutex<Vec<RetiredPtr>> = Mutex::new(Vec::new());
 
 thread_local! {
     static LOCAL_RETIRED_POINTERS: LocalRetiredPtrs = const { LocalRetiredPtrs(UnsafeCell::new(Vec::new())) };
+
+    static HAZARD_POINTERS_CACHE: UnsafeCell<Vec<usize>> = const { UnsafeCell::new(Vec::new()) };
 }
 
 /**
@@ -83,15 +85,19 @@ unsafe impl Domain for GlobalDomain {
     }
 
     fn reclaim(&self) {
-        let hzrd_ptrs: BTreeSet<_> = HAZARD_POINTERS.iter().map(HzrdPtr::get).collect();
+        HAZARD_POINTERS_CACHE.with(|cell| {
+            let hzrd_ptrs = unsafe { &mut *cell.get() };
+            hzrd_ptrs.clear();
+            hzrd_ptrs.extend(HAZARD_POINTERS.iter().map(HzrdPtr::get));
 
-        if let Ok(mut retired_ptrs) = SHARED_RETIRED_POINTERS.try_lock() {
-            retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
-        }
+            LOCAL_RETIRED_POINTERS.with(|cell| {
+                let retired_ptrs = unsafe { &mut *cell.0.get() };
+                retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+            });
 
-        LOCAL_RETIRED_POINTERS.with(|cell| {
-            let retired_ptrs = unsafe { &mut *cell.0.get() };
-            retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+            if let Ok(mut retired_ptrs) = SHARED_RETIRED_POINTERS.try_lock() {
+                retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+            }
         });
     }
 
@@ -99,19 +105,20 @@ unsafe impl Domain for GlobalDomain {
 
     // Override this to avoid mutable aliasing
     fn retire(&self, ret_ptr: RetiredPtr) {
-        let hzrd_ptrs: BTreeSet<_> = HAZARD_POINTERS.iter().map(HzrdPtr::get).collect();
+        HAZARD_POINTERS_CACHE.with(|cell| {
+            let hzrd_ptrs = unsafe { &mut *cell.get() };
+            hzrd_ptrs.clear();
+            hzrd_ptrs.extend(HAZARD_POINTERS.iter().map(HzrdPtr::get));
 
-        if let Ok(mut retired_ptrs) = SHARED_RETIRED_POINTERS.try_lock() {
-            retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
-        }
+            LOCAL_RETIRED_POINTERS.with(|cell| {
+                let retired_ptrs = unsafe { &mut *cell.0.get() };
+                retired_ptrs.push(ret_ptr);
+                retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+            });
 
-        LOCAL_RETIRED_POINTERS.with(|cell| {
-            let retired_ptrs = unsafe { &mut *cell.0.get() };
-
-            // And retire the given pointer
-            retired_ptrs.push(ret_ptr);
-
-            retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+            if let Ok(mut retired_ptrs) = SHARED_RETIRED_POINTERS.try_lock() {
+                retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+            }
         });
     }
 }

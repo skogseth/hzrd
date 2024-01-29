@@ -15,3 +15,7 @@ path = "benchmarks/back-and-forth.rs"
 [[bin]]
 name = "local-writer"
 path = "benchmarks/local-writer.rs"
+
+[[bin]]
+name = "single-threaded"
+path = "benchmarks/single-threaded.rs"
