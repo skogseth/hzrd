@@ -1,5 +1,5 @@
 use std::cell::UnsafeCell;
-use std::collections::{BTreeSet, LinkedList};
+use std::collections::LinkedList;
 use std::sync::Mutex;
 
 use crate::core::{Domain, HzrdPtr, RetiredPtr};
@@ -63,8 +63,8 @@ impl Drop for LocalRetiredPtrs {
         let local_retired_ptrs = self.0.get_mut();
 
         // Clean up any garbage that can be cleaned up
-        let hzrd_ptrs: BTreeSet<_> = HAZARD_POINTERS.iter().map(HzrdPtr::get).collect();
-        local_retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+        let hzrd_ptrs = HzrdPtrsCache::load(HAZARD_POINTERS.iter());
+        local_retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
 
         // If there's still garbage we send it to the shared pool
         if !local_retired_ptrs.is_empty() {
