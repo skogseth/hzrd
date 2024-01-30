@@ -29,7 +29,7 @@ pub struct HzrdPtrsCache(Vec<usize>);
 
 impl HzrdPtrsCache {
     fn load<'t>(hzrd_ptrs: impl Iterator<Item = &'t HzrdPtr>) -> Self {
-        let mut hzrd_ptrs_cache = HAZARD_POINTERS_CACHE.with(|cell| cell.take());
+        let mut hzrd_ptrs_cache = HAZARD_POINTERS_CACHE.take();
         hzrd_ptrs_cache.clear();
         hzrd_ptrs_cache.extend(hzrd_ptrs.map(HzrdPtr::get));
         Self(hzrd_ptrs_cache)
@@ -43,7 +43,7 @@ impl HzrdPtrsCache {
 impl Drop for HzrdPtrsCache {
     fn drop(&mut self) {
         let hzrd_ptrs = std::mem::take(&mut self.0);
-        HAZARD_POINTERS_CACHE.with(|cell| cell.replace(hzrd_ptrs));
+        HAZARD_POINTERS_CACHE.replace(hzrd_ptrs);
     }
 }
 
