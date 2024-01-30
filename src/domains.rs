@@ -1,4 +1,4 @@
-use std::cell::{Cell, UnsafeCell};
+use std::cell::UnsafeCell;
 use std::collections::{BTreeSet, LinkedList};
 use std::sync::Mutex;
 
@@ -22,28 +22,21 @@ use crate::stack::SharedStack;
 // -------------------------------------
 
 thread_local! {
-    static HAZARD_POINTERS_CACHE: Cell<Vec<usize>> = const { Cell::new(Vec::new()) };
+    static HAZARD_POINTERS_CACHE: UnsafeCell<Vec<usize>> = const { UnsafeCell::new(Vec::new()) };
 }
 
-pub struct HzrdPtrsCache(Vec<usize>);
+pub struct HzrdPtrsCache(*mut Vec<usize>);
 
 impl HzrdPtrsCache {
     fn load<'t>(hzrd_ptrs: impl Iterator<Item = &'t HzrdPtr>) -> Self {
-        let mut hzrd_ptrs_cache = HAZARD_POINTERS_CACHE.take();
-        hzrd_ptrs_cache.clear();
-        hzrd_ptrs_cache.extend(hzrd_ptrs.map(HzrdPtr::get));
+        let hzrd_ptrs_cache: *mut Vec<usize> = HAZARD_POINTERS_CACHE.with(|cell| cell.get());
+        unsafe { &mut *hzrd_ptrs_cache }.clear();
+        unsafe { &mut *hzrd_ptrs_cache }.extend(hzrd_ptrs.map(HzrdPtr::get));
         Self(hzrd_ptrs_cache)
     }
 
     fn contains(&self, addr: usize) -> bool {
-        self.0.contains(&addr)
-    }
-}
-
-impl Drop for HzrdPtrsCache {
-    fn drop(&mut self) {
-        let hzrd_ptrs = std::mem::take(&mut self.0);
-        HAZARD_POINTERS_CACHE.replace(hzrd_ptrs);
+        unsafe { &*(self.0) }.contains(&addr)
     }
 }
 
