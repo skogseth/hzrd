@@ -1,9 +1,51 @@
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 use std::collections::{BTreeSet, LinkedList};
 use std::sync::Mutex;
 
 use crate::core::{Domain, HzrdPtr, RetiredPtr};
 use crate::stack::SharedStack;
+
+// -------------------------------------
+
+/*
+# Todo:
+- Add options for caching:
+  -> No caching
+  -> Maximum size of cache?
+  -> Fixed size for cache?
+  -> Pre-allocated cache?
+- Add option for bulk-reclaim (default to what?), use const generics?
+- Test HashSet for cache (BTreeSet can't reuse allocation?)
+
+*/
+
+// -------------------------------------
+
+thread_local! {
+    static HAZARD_POINTERS_CACHE: Cell<Vec<usize>> = const { Cell::new(Vec::new()) };
+}
+
+pub struct HzrdPtrsCache(Vec<usize>);
+
+impl HzrdPtrsCache {
+    fn load<'t>(hzrd_ptrs: impl Iterator<Item = &'t HzrdPtr>) -> Self {
+        let mut hzrd_ptrs_cache = HAZARD_POINTERS_CACHE.take();
+        hzrd_ptrs_cache.clear();
+        hzrd_ptrs_cache.extend(hzrd_ptrs.map(HzrdPtr::get));
+        Self(hzrd_ptrs_cache)
+    }
+
+    fn contains(&self, addr: usize) -> bool {
+        self.0.contains(&addr)
+    }
+}
+
+impl Drop for HzrdPtrsCache {
+    fn drop(&mut self) {
+        let hzrd_ptrs = std::mem::take(&mut self.0);
+        HAZARD_POINTERS_CACHE.replace(hzrd_ptrs);
+    }
+}
 
 // -------------------------------------
 
@@ -83,36 +125,33 @@ unsafe impl Domain for GlobalDomain {
     }
 
     fn reclaim(&self) {
-        let hzrd_ptrs: BTreeSet<_> = HAZARD_POINTERS.iter().map(HzrdPtr::get).collect();
-
-        if let Ok(mut retired_ptrs) = SHARED_RETIRED_POINTERS.try_lock() {
-            retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
-        }
+        let hzrd_ptrs = HzrdPtrsCache::load(HAZARD_POINTERS.iter());
 
         LOCAL_RETIRED_POINTERS.with(|cell| {
             let retired_ptrs = unsafe { &mut *cell.0.get() };
-            retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+            retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
         });
+
+        if let Ok(mut retired_ptrs) = SHARED_RETIRED_POINTERS.try_lock() {
+            retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
+        }
     }
 
     // -------------------------------------
 
     // Override this to avoid mutable aliasing
     fn retire(&self, ret_ptr: RetiredPtr) {
-        let hzrd_ptrs: BTreeSet<_> = HAZARD_POINTERS.iter().map(HzrdPtr::get).collect();
-
-        if let Ok(mut retired_ptrs) = SHARED_RETIRED_POINTERS.try_lock() {
-            retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
-        }
+        let hzrd_ptrs = HzrdPtrsCache::load(HAZARD_POINTERS.iter());
 
         LOCAL_RETIRED_POINTERS.with(|cell| {
             let retired_ptrs = unsafe { &mut *cell.0.get() };
-
-            // And retire the given pointer
             retired_ptrs.push(ret_ptr);
-
-            retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+            retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
         });
+
+        if let Ok(mut retired_ptrs) = SHARED_RETIRED_POINTERS.try_lock() {
+            retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
+        }
     }
 }
 
@@ -131,8 +170,8 @@ impl std::fmt::Debug for GlobalDomain {
 /// Shared, multithreaded domain
 #[derive(Debug)]
 pub struct SharedDomain {
-    hzrd: SharedStack<HzrdPtr>,
-    retired: Mutex<Vec<RetiredPtr>>,
+    hzrd_ptrs: SharedStack<HzrdPtr>,
+    retired_ptrs: Mutex<Vec<RetiredPtr>>,
 }
 
 impl SharedDomain {
@@ -147,19 +186,19 @@ impl SharedDomain {
     */
     pub const fn new() -> Self {
         Self {
-            hzrd: SharedStack::new(),
-            retired: Mutex::new(Vec::new()),
+            hzrd_ptrs: SharedStack::new(),
+            retired_ptrs: Mutex::new(Vec::new()),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn number_of_hzrd_ptrs(&self) -> usize {
-        self.hzrd.iter().count()
+        self.hzrd_ptrs.iter().count()
     }
 
     #[cfg(test)]
     pub(crate) fn number_of_retired_ptrs(&self) -> usize {
-        self.retired.lock().unwrap().len()
+        self.retired_ptrs.lock().unwrap().len()
     }
 }
 
@@ -167,19 +206,19 @@ unsafe impl Domain for SharedDomain {
     fn hzrd_ptr(&self) -> &HzrdPtr {
         // Important to only grab shared references to the HzrdPtr's
         // as others may be looking at them
-        match self.hzrd.iter().find_map(|node| node.try_acquire()) {
+        match self.hzrd_ptrs.iter().find_map(|node| node.try_acquire()) {
             Some(hzrd_ptr) => hzrd_ptr,
-            None => self.hzrd.push(HzrdPtr::new()),
+            None => self.hzrd_ptrs.push(HzrdPtr::new()),
         }
     }
 
     fn just_retire(&self, ret_ptr: RetiredPtr) {
-        self.retired.lock().unwrap().push(ret_ptr);
+        self.retired_ptrs.lock().unwrap().push(ret_ptr);
     }
 
     fn reclaim(&self) {
         // Try to aquire lock, exit if it is taken
-        let Ok(mut retired_ptrs) = self.retired.try_lock() else {
+        let Ok(mut retired_ptrs) = self.retired_ptrs.try_lock() else {
             return;
         };
 
@@ -188,8 +227,8 @@ unsafe impl Domain for SharedDomain {
             return;
         }
 
-        let hzrd_ptrs: BTreeSet<_> = self.hzrd.iter().map(HzrdPtr::get).collect();
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+        let hzrd_ptrs = HzrdPtrsCache::load(self.hzrd_ptrs.iter());
+        retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
     }
 
     // -------------------------------------
@@ -197,7 +236,7 @@ unsafe impl Domain for SharedDomain {
     // Override this for (hopefully) improved performance
     fn retire(&self, ret_ptr: RetiredPtr) {
         // Grab the lock to retired pointers
-        let mut retired_ptrs = self.retired.lock().unwrap();
+        let mut retired_ptrs = self.retired_ptrs.lock().unwrap();
 
         // And retire the given pointer
         retired_ptrs.push(ret_ptr);
@@ -207,8 +246,8 @@ unsafe impl Domain for SharedDomain {
             return;
         }
 
-        let hzrd_ptrs: BTreeSet<_> = self.hzrd.iter().map(HzrdPtr::get).collect();
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+        let hzrd_ptrs = HzrdPtrsCache::load(self.hzrd_ptrs.iter());
+        retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
     }
 }
 
@@ -234,8 +273,8 @@ mod shared_cell {
 #[derive(Debug)]
 pub struct LocalDomain {
     // Important to only allow shared references to the HzrdPtr's
-    hzrd: UnsafeCell<LinkedList<SharedCell<HzrdPtr>>>,
-    retired: UnsafeCell<Vec<RetiredPtr>>,
+    hzrd_ptrs: UnsafeCell<LinkedList<SharedCell<HzrdPtr>>>,
+    retired_ptrs: UnsafeCell<Vec<RetiredPtr>>,
 }
 
 impl LocalDomain {
@@ -250,69 +289,47 @@ impl LocalDomain {
     */
     pub const fn new() -> Self {
         Self {
-            hzrd: UnsafeCell::new(LinkedList::new()),
-            retired: UnsafeCell::new(Vec::new()),
+            hzrd_ptrs: UnsafeCell::new(LinkedList::new()),
+            retired_ptrs: UnsafeCell::new(Vec::new()),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn number_of_hzrd_ptrs(&self) -> usize {
-        unsafe { &*self.hzrd.get() }.iter().count()
+        unsafe { &*self.hzrd_ptrs.get() }.iter().count()
     }
 
     #[cfg(test)]
     pub(crate) fn number_of_retired_ptrs(&self) -> usize {
-        unsafe { &*self.retired.get() }.len()
+        unsafe { &*self.retired_ptrs.get() }.len()
     }
 }
 
 unsafe impl Domain for LocalDomain {
     fn hzrd_ptr(&self) -> &HzrdPtr {
         {
-            let hzrd_ptrs = unsafe { &*self.hzrd.get() };
+            let hzrd_ptrs = unsafe { &*self.hzrd_ptrs.get() };
 
             if let Some(hzrd_ptr) = hzrd_ptrs.iter().find_map(|node| node.get().try_acquire()) {
                 return hzrd_ptr;
             }
         }
 
-        let hzrd_ptrs = unsafe { &mut *self.hzrd.get() };
+        let hzrd_ptrs = unsafe { &mut *self.hzrd_ptrs.get() };
         hzrd_ptrs.push_back(SharedCell::new(HzrdPtr::new()));
         unsafe { hzrd_ptrs.back().unwrap_unchecked().get() }
     }
 
     fn just_retire(&self, ret_ptr: RetiredPtr) {
-        let retired_ptrs = unsafe { &mut *self.retired.get() };
+        let retired_ptrs = unsafe { &mut *self.retired_ptrs.get() };
         retired_ptrs.push(ret_ptr);
     }
 
     fn reclaim(&self) {
-        let retired_ptrs = unsafe { &mut *self.retired.get() };
-        let hzrd_ptrs = unsafe { &*self.hzrd.get() };
-
-        let hzrd_ptrs: BTreeSet<_> = hzrd_ptrs
-            .iter()
-            .map(SharedCell::get)
-            .map(HzrdPtr::get)
-            .collect();
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
-    }
-
-    // -------------------------------------
-
-    // Override this for (hopefully) improved performance
-    fn retire(&self, ret_ptr: RetiredPtr) {
-        let retired_ptrs = unsafe { &mut *self.retired.get() };
-        let hzrd_ptrs = unsafe { &*self.hzrd.get() };
-
-        retired_ptrs.push(ret_ptr);
-
-        let hzrd_ptrs: BTreeSet<_> = hzrd_ptrs
-            .iter()
-            .map(SharedCell::get)
-            .map(HzrdPtr::get)
-            .collect();
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+        let retired_ptrs = unsafe { &mut *self.retired_ptrs.get() };
+        let hzrd_ptrs = unsafe { &*self.hzrd_ptrs.get() };
+        let hzrd_ptrs = HzrdPtrsCache::load(hzrd_ptrs.iter().map(SharedCell::get));
+        retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
     }
 }
 
@@ -339,8 +356,8 @@ mod tests {
         assert_eq!(domain.number_of_hzrd_ptrs(), 1);
 
         unsafe { hzrd_ptr.protect(ptr.as_ptr()) };
-        let set: BTreeSet<_> = HAZARD_POINTERS.iter().map(HzrdPtr::get).collect();
-        assert!(set.contains(&(ptr.as_ptr() as usize)));
+        let hzrd_ptrs = HzrdPtrsCache::load(HAZARD_POINTERS.iter());
+        assert!(hzrd_ptrs.contains(ptr.as_ptr() as usize));
 
         domain.retire(unsafe { RetiredPtr::new(ptr) });
         assert_eq!(domain.number_of_retired_ptrs(), 1);
@@ -363,8 +380,8 @@ mod tests {
         assert_eq!(domain.number_of_hzrd_ptrs(), 1);
 
         unsafe { hzrd_ptr.protect(ptr.as_ptr()) };
-        let set: BTreeSet<_> = domain.hzrd.iter().map(HzrdPtr::get).collect();
-        assert!(set.contains(&(ptr.as_ptr() as usize)));
+        let hzrd_ptrs = HzrdPtrsCache::load(domain.hzrd_ptrs.iter());
+        assert!(hzrd_ptrs.contains(ptr.as_ptr() as usize));
 
         domain.retire(unsafe { RetiredPtr::new(ptr) });
         assert_eq!(domain.number_of_retired_ptrs(), 1);
@@ -387,12 +404,9 @@ mod tests {
         assert_eq!(domain.number_of_hzrd_ptrs(), 1);
 
         unsafe { hzrd_ptr.protect(ptr.as_ptr()) };
-        let set: BTreeSet<_> = unsafe { &*domain.hzrd.get() }
-            .iter()
-            .map(SharedCell::get)
-            .map(HzrdPtr::get)
-            .collect();
-        assert!(set.contains(&(ptr.as_ptr() as usize)));
+        let hzrd_ptrs = unsafe { &*domain.hzrd_ptrs.get() };
+        let hzrd_ptrs = HzrdPtrsCache::load(hzrd_ptrs.iter().map(SharedCell::get));
+        assert!(hzrd_ptrs.contains(ptr.as_ptr() as usize));
 
         domain.retire(unsafe { RetiredPtr::new(ptr) });
         assert_eq!(domain.number_of_retired_ptrs(), 1);
