@@ -1,3 +1,16 @@
+/*!
+Module containing various types implementing the [`Domain`](`crate::core::Domain`)-trait.
+
+The module has three core types:
+- [`GlobalDomain`]: A multithreaded, globally shared domain
+- [`SharedDomain`]: A multithreaded, shared domain
+- [`LocalDomain`]: A singlethreaded, local domain
+
+The default domain used by [`HzrdCell`](`crate::HzrdCell`) is [`GlobalDomain`], which is the recommended domain for most applications.
+*/
+
+// -------------------------------------
+
 use std::cell::UnsafeCell;
 use std::collections::{BTreeSet, LinkedList};
 use std::sync::Mutex;
@@ -25,7 +38,7 @@ thread_local! {
     static HAZARD_POINTERS_CACHE: UnsafeCell<Vec<usize>> = const { UnsafeCell::new(Vec::new()) };
 }
 
-pub struct HzrdPtrsCache(*mut Vec<usize>);
+struct HzrdPtrsCache(*mut Vec<usize>);
 
 impl HzrdPtrsCache {
     /// SAFETY: Only one object of this type can exist at any point
@@ -51,13 +64,14 @@ thread_local! {
     static LOCAL_RETIRED_POINTERS: LocalRetiredPtrs = const { LocalRetiredPtrs(UnsafeCell::new(Vec::new())) };
 }
 
-/**
-We need a special wrapper type to handle cleanup on closing threads.
-
-There is a potential for memory leaks if the drop function is not called, which can happen according to https://doc.rust-lang.org/std/thread/struct.LocalKey.html. It seems like we're in the clear, though.
-*/
+/// We need a special wrapper type to handle cleanup on closing threads.
 struct LocalRetiredPtrs(UnsafeCell<Vec<RetiredPtr>>);
 
+/**
+There is a potential for the drop-function to not be called for thread-locals
+(see https://doc.rust-lang.org/std/thread/struct.LocalKey.html).
+This should, in our case, only lead to memory leaks, which is okay because it seems that the occasions in which the drop-function is (potentially) not called is close to program exit.
+*/
 impl Drop for LocalRetiredPtrs {
     fn drop(&mut self) {
         // We can actually use `get_mut` in here, nice!
@@ -83,7 +97,48 @@ impl std::fmt::Debug for LocalRetiredPtrs {
     }
 }
 
-/// Globally shared, multithreaded domain
+/**
+A globally shared, multithreaded domain
+
+This is the default domain used by `HzrdCell`, and is the recommended domain for most applications. It's based on a set of globally shared, static variables, and so there is no "constructor" for this domain. The [`GlobalDomain`] struct is  a Zero Sized Type (ZST) that acts simply as an accessor to these globally shared variables.
+
+# Example
+```
+use hzrd::{HzrdCell, GlobalDomain};
+
+// We here explicitly mark the use of the `GlobalDomain`
+let cell_1 = HzrdCell::new_in(0, GlobalDomain);
+
+// We usually just use the default constructor `HzrdCell::new`
+let cell_2 = HzrdCell::new(false);
+
+// We read the value of the two cells, holding on to the handle for now
+let _handle_1 = cell_1.read();
+let _handle_2 = cell_2.read();
+
+// The `GlobalDomain` now holds two hazard pointers
+// Both of which are at the moment in active use (in `handle_1` and `handle_2`, respectively)
+
+// We write some values to the cells, which will not be able to free the previous
+// values in the cell as there are references to these in `handle_1` and `handle_2`
+cell_1.set(1);
+cell_2.set(true);
+
+// The `GlobalDomain` now has the following garbage: (0, false)
+
+// Drop both handles, so garbage can (eventually) be freed
+drop(_handle_1);
+drop(_handle_2);
+
+// Free all garbage in the `GlobalDomain`
+cell_1.reclaim();
+
+// There is no need to call `HzrdCell::reclaim` on cell_2 as they both share the `GlobalDomain`.
+```
+
+# Thread local garbage
+There is some more complexity to the garbage collection in `GlobalDomain`: Each thread holds its own local garbage, as well as access to some garbage shared between all threads. If a thread closes down with local garbage still remaining (it will attempt one last cleanup before closing), then that garbage will be moved to the shared garbage. Whenever a thread does garbage collection it will first try to clean up the local garbage it holds, followed by an attempt to clean up the shared garbage. However, since the shared garbage is locked by a [`Mutex`](`std::sync::Mutex`) it will only attempt to do soM; if the shared garbage is locked by another thread this step will be skipped.
+*/
 pub struct GlobalDomain;
 
 impl GlobalDomain {
@@ -163,7 +218,47 @@ impl std::fmt::Debug for GlobalDomain {
 
 // ------------------------------------------
 
-/// Shared, multithreaded domain
+/**
+Shared, multithreaded domain
+
+A shared domain can, in contrast to [`GlobalDomain`], be owned by the [`HzrdCell`](`crate::HzrdCell`) itself. This means the cell will hold exclusive access to it, and the garbage associated with the domain will be cleaned up when the cell is dropped. This can be abused to delay all garbage collection for some limited time in order to do it all in bulk:
+
+```
+use hzrd::{HzrdCell, SharedDomain};
+
+let cell = HzrdCell::new_in(0, SharedDomain::new());
+
+std::thread::scope(|s| {
+    s.spawn(|| {
+        // Let's see how quickly we can count to thirty
+        for i in 0..30 {
+            // Intentionally avoid all garbage collection
+            cell.just_set(i);
+        }
+
+        // We have finished counting, now we clean up
+        cell.reclaim();
+    });
+
+    s.spawn(|| {
+        println!("Let's check what the value is! {}", cell.get());
+    });
+});
+```
+
+Another interesting option with [`SharedDomain`] is to have the domain stored in an [`Arc`](`std::sync::Arc`). Multiple cells can now share a single domain, but that domain (including all the associated garbage) will still be guaranteed to be cleaned up when all the cells are dropped.
+```
+use std::sync::Arc;
+
+use hzrd::{HzrdCell, SharedDomain};
+
+let custom_domain = Arc::new(SharedDomain::new());
+let cell_1 = HzrdCell::new_in(0, Arc::clone(&custom_domain));
+let cell_2 = HzrdCell::new_in(false, Arc::clone(&custom_domain));
+# assert_eq!(cell_1.get(), 0);
+# assert_eq!(cell_2.get(), false);
+```
+*/
 #[derive(Debug)]
 pub struct SharedDomain {
     hzrd_ptrs: SharedStack<HzrdPtr>,
@@ -267,7 +362,57 @@ mod shared_cell {
     }
 }
 
-/// Local, singlethreaded domain
+/**
+Local, singlethreaded domain
+
+The main use case for this is when only a single thread needs to be able to write to a cell. Since the `Domain` is not `Sync` the `HzrdCell` constructed with it won't be either, as this requires both the value held and the domain to be thread-safe. However, `HzrdReader` holds no access to the domain, only a reference to the value. It is therefore `Send` if and only if the value held is both `Send` and `Sync`. Using this we can create a single-writer, multiple-readers construct.
+
+# Example
+```
+use std::sync::Barrier;
+
+use hzrd::{HzrdCell, LocalDomain};
+
+const N_THREADS: usize = 10;
+
+let cell = HzrdCell::new_in(0, LocalDomain::new());
+let barrier = Barrier::new(N_THREADS + 1);
+
+// We use scoped threads to avoid requirements for 'static lifetimes
+std::thread::scope(|s| {
+    for i in 0..N_THREADS  {
+        // We need to construct readers, as the cell is not `Sync`
+        let mut reader = cell.reader();
+
+        // Borrow this, so as to not move it into the thread
+        let barrier = &barrier;
+
+        // We now send the reader to the spawned thread
+        s.spawn(move || {
+            // Wait for everyone to be ready
+            barrier.wait();
+
+            // All threads read at the same time!
+            println!("[{i}]: {}", reader.get());
+        });
+    }
+
+    // Wait for all the threads to be ready
+    barrier.wait();
+
+    // Then start counting
+    for num in 1..5 {
+        // Don't perform garbage collection
+        cell.just_set(num);
+    }
+
+    // We're done, but no need to clean up...
+});
+
+// The cell is dropped, all garbage is cleaned up
+drop(cell);
+```
+*/
 #[derive(Debug)]
 pub struct LocalDomain {
     // Important to only allow shared references to the HzrdPtr's

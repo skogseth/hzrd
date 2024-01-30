@@ -1,5 +1,5 @@
 #![warn(unsafe_op_in_unsafe_fn)]
-//#![warn(missing_docs)]
+#![warn(missing_docs)]
 //#![warn(rustdoc::missing_doc_code_examples)]
 
 /*!
@@ -76,42 +76,6 @@ Holds a value protected by hazard pointers.
 Each [`HzrdCell`] belongs to a given domain, which contains the set of hazard pointers protecting the value. See the [`Domain`] trait for more details on this.
 
 See the [crate-level documentation](crate) for a "getting started" guide.
-
-# Advanced usage
-The domain can, for example, be held in the cell itself. This means the cell will hold exclusive access to it, and the garbage associated with the domain will be cleaned up when the cell is dropped. This can be abused to delay all garbage collection for some limited time in order to do it all in bulk:
-
-```
-use hzrd::{HzrdCell, SharedDomain};
-
-let cell = HzrdCell::new_in(0, SharedDomain::new());
-
-std::thread::scope(|s| {
-    // Let's see how quickly we can count to thirty
-    s.spawn(|| {
-        for i in 0..30 {
-            // Intentionally avoid all garbage collection
-            cell.just_set(i);
-        }
-    });
-
-    s.spawn(|| {
-        println!("Let's check what the value is! {}", cell.get());
-    });
-});
-```
-
-Another option is to have the domain stored in an [`Arc`](`std::sync::Arc`). Multiple cells can now share a single domain, but that domain (including all the associated garbage) will still be guaranteed to be cleaned up when all the cells are dropped.
-```
-use std::sync::Arc;
-
-use hzrd::{HzrdCell, SharedDomain};
-
-let custom_domain = Arc::new(SharedDomain::new());
-let cell_1 = HzrdCell::new_in(0, Arc::clone(&custom_domain));
-let cell_2 = HzrdCell::new_in(false, Arc::clone(&custom_domain));
-# assert_eq!(cell_1.get(), 0);
-# assert_eq!(cell_2.get(), false);
-```
 */
 #[derive(Debug)]
 pub struct HzrdCell<T, D> {
@@ -125,6 +89,7 @@ impl<T: 'static> HzrdCell<T, GlobalDomain> {
 
     The default domain is a globally shared domain, see [`GlobalDomain`] for more information on this domain. This is the recommended way for constructing [`HzrdCell`]s unless you really know what you're doing, in which case you can use [`HzrdCell::new_in`] to construct in a custom domain.
 
+    # Note
     The value held in the cell will be allocated on the heap via [`Box`], and is stored seperate from the metadata associated with the [`HzrdCell`].
 
     # Example
@@ -280,8 +245,11 @@ impl<T: 'static, D> HzrdCell<T, D> {
     /**
     Construct a new [`HzrdCell`] in the given domain.
 
-    The recommended way for most users to construct a [`HzrdCell`] is using the [`new`](`HzrdCell::new`) function, which uses a global, shared domain. This method is aimed at more advanced usage of this library.
+    This method is aimed at more advanced usage of this library, as it requires more knowledge about hazard pointer domains and how they work  The recommended way for most users to construct a [`HzrdCell`] is using the [`new`](`HzrdCell::new`) function, which uses a globally shared domain.
 
+    A good starting point for using this function is to understand the basics of the [`Domain`](`core::Domain`) trait. You can then browse the various implementations of this trait provided by this crate in the [`domains`]-module.
+
+    # Note
     The value held in the cell will be allocated on the heap via [`Box`], and is stored seperate from the metadata associated with the [`HzrdCell`].
 
     ```

@@ -1,3 +1,17 @@
+/*!
+Module containing core functionality for this crate.
+
+The most imporant part of this module is the [`Domain`] trait, as it defines the interface for any type of domain. There are multiple domains implemented in this crate (implementing one yourself is no easy task), all of which can be found in the [`domains`](`crate::domains`)-module. The default domain used by [`HzrdCell`](`crate::HzrdCell`) is [`GlobalDomain`](`crate::domains::GlobalDomain`).
+
+There are also two very important types in this module:
+- [`HzrdPtr`]
+- [`RetiredPtr`]
+
+These are used in the [`Domain`] interface, and can be considered the fundamental building blocks of the library.
+*/
+
+// -------------------------------------
+
 use std::any::Any;
 use std::ptr::{addr_of, NonNull};
 use std::rc::Rc;
