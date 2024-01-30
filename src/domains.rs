@@ -7,6 +7,20 @@ use crate::stack::SharedStack;
 
 // -------------------------------------
 
+/*
+# Todo:
+- Add options for caching:
+  -> No caching
+  -> Maximum size of cache?
+  -> Fixed size for cache?
+  -> Pre-allocated cache?
+- Add option for bulk-reclaim (default to what?), use const generics?
+- Test HashSet for cache (BTreeSet can't reuse allocation?)
+
+*/
+
+// -------------------------------------
+
 thread_local! {
     static HAZARD_POINTERS_CACHE: Cell<Vec<usize>> = const { Cell::new(Vec::new()) };
 }
