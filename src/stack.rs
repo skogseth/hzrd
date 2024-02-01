@@ -105,9 +105,9 @@ impl<T> IntoIterator for SharedStack<T> {
     type Item = T;
     type IntoIter = IntoIter<T>;
     fn into_iter(self) -> Self::IntoIter {
-        IntoIter {
-            next: self.top.load(SeqCst),
-        }
+        let next = self.top.load(SeqCst);
+        std::mem::forget(self);
+        IntoIter { next }
     }
 }
 
@@ -139,13 +139,13 @@ impl<T> Iterator for IntoIter<T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if !self.next.is_null() {
-            let Node { val, next } = unsafe { *Box::from_raw(self.next) };
-            self.next = next.load(SeqCst);
-            Some(val)
-        } else {
-            None
+        if self.next.is_null() {
+            return None;
         }
+
+        let current = unsafe { Box::from_raw(self.next) };
+        self.next = current.next.load(SeqCst);
+        Some(current.val)
     }
 }
 
@@ -238,6 +238,6 @@ mod tests {
         stack.push(String::from("World"));
 
         let list: Vec<String> = stack.into_iter().collect();
-        assert_eq!(list, ["Hello", "World"]);
+        assert_eq!(list, ["World", "Hello"]);
     }
 }
