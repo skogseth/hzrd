@@ -78,6 +78,15 @@ impl<T> SharedStack<T> {
     {
         self.iter().copied().collect()
     }
+
+    /// SAFETY: Caller must make sure no one else is reading from the stack
+    pub unsafe fn take(&self) -> Self {
+        let top = self.top.swap(std::ptr::null_mut(), SeqCst);
+
+        Self {
+            top: AtomicPtr::new(top),
+        }
+    }
 }
 
 impl<T: Debug> Debug for SharedStack<T> {
@@ -89,6 +98,16 @@ impl<T: Debug> Debug for SharedStack<T> {
 impl<T> Default for SharedStack<T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<T> IntoIterator for SharedStack<T> {
+    type Item = T;
+    type IntoIter = IntoIter<T>;
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter {
+            next: self.top.load(SeqCst),
+        }
     }
 }
 
@@ -107,6 +126,25 @@ impl<T> Drop for SharedStack<T> {
             let next = unsafe { (*current).next.load(Acquire) };
             unsafe { drop(Box::from_raw(current)) };
             current = next;
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct IntoIter<T> {
+    next: *mut Node<T>,
+}
+
+impl<T> Iterator for IntoIter<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if !self.next.is_null() {
+            let Node { val, next } = unsafe { *Box::from_raw(self.next) };
+            self.next = next.load(SeqCst);
+            Some(val)
+        } else {
+            None
         }
     }
 }
@@ -191,5 +229,15 @@ mod tests {
                 }
             });
         });
+    }
+
+    #[test]
+    fn into_iter() {
+        let stack = SharedStack::new();
+        stack.push(String::from("Hello"));
+        stack.push(String::from("World"));
+
+        let list: Vec<String> = stack.into_iter().collect();
+        assert_eq!(list, ["Hello", "World"]);
     }
 }
