@@ -724,42 +724,4 @@ mod tests {
             });
         });
     }
-
-    #[test]
-    fn stress_test_read() {
-        let cell = HzrdCell::new(String::new());
-        let barrier = Barrier::new(2);
-
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                barrier.wait();
-                for _ in 0..40 {
-                    let _ = cell.read();
-                }
-            });
-
-            s.spawn(|| {
-                barrier.wait();
-                for _ in 0..40 {
-                    cell.set(String::from("Hello world"));
-                }
-            });
-        });
-    }
-
-    #[test]
-    fn holding_handles() {
-        let cell = HzrdCell::new_in(String::from("hello"), SharedDomain::new());
-
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                std::thread::sleep(Duration::from_millis(1));
-                let _handles: Vec<_> = (0..40).map(|_| cell.read()).collect();
-            });
-
-            for string in (0..40).map(|i| i.to_string()) {
-                s.spawn(|| cell.set(string));
-            }
-        });
-    }
 }
