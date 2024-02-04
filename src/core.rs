@@ -110,7 +110,7 @@ impl<'hzrd, T> ReadHandle<'hzrd, T> {
             unsafe { hzrd_ptr.protect(ptr) };
 
             // We now need to keep updating it until it is in a consistent state
-            let new_ptr = value.load(Acquire);
+            let new_ptr = value.load(SeqCst);
             if ptr == new_ptr {
                 break;
             } else {
@@ -221,12 +221,12 @@ impl HzrdPtr {
 
     /// Get the value held by the hazard pointer
     pub fn get(&self) -> usize {
-        self.0.load(Acquire)
+        self.0.load(SeqCst)
     }
 
     /// Try to aquire the hazard pointer
     pub fn try_acquire(&self) -> Option<&Self> {
-        match self.0.compare_exchange(0, dummy_addr(), Relaxed, Relaxed) {
+        match self.0.compare_exchange(0, dummy_addr(), SeqCst, Relaxed) {
             Ok(_) => Some(self),
             Err(_) => None,
         }
@@ -242,7 +242,7 @@ impl HzrdPtr {
     */
     pub unsafe fn protect<T>(&self, ptr: *mut T) {
         debug_assert!(!ptr.is_null());
-        self.0.store(ptr as usize, Release);
+        self.0.store(ptr as usize, SeqCst);
     }
 
     /**
@@ -252,7 +252,7 @@ impl HzrdPtr {
     - The caller must be the current "owner" of the hazard pointer
     */
     pub unsafe fn reset(&self) {
-        self.0.store(dummy_addr(), Release);
+        self.0.store(dummy_addr(), SeqCst);
     }
 
     /**
@@ -263,7 +263,7 @@ impl HzrdPtr {
     - The hazard cell must be re-aquired after calling this using [`try_acquire`](`HzrdPtr::try_acquire`)
     */
     pub unsafe fn release(&self) {
-        self.0.store(0, Release);
+        self.0.store(0, SeqCst);
     }
 }
 

@@ -1,6 +1,6 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicPtr, Ordering::*};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
 
 #[derive(Debug)]
 pub struct Node<T> {
@@ -17,30 +17,53 @@ impl<T> Node<T> {
 
 pub struct SharedStack<T> {
     top: AtomicPtr<Node<T>>,
+    count: AtomicUsize,
 }
 
 impl<T> SharedStack<T> {
+    /// Create a new, empty stack
     pub const fn new() -> Self {
-        let null = AtomicPtr::new(std::ptr::null_mut());
-        Self { top: null }
+        Self {
+            top: AtomicPtr::new(std::ptr::null_mut()),
+            count: AtomicUsize::new(0),
+        }
     }
 
+    /// Return the current count of the stack
+    pub fn count(&self) -> usize {
+        // We can use `Relaxed` ordering here since the value
+        // will be correctly updated on the previous store
+        self.count.load(Relaxed)
+    }
+
+    /// Push a new value onto the stack and return a reference to the value
     pub fn push(&self, val: T) -> &T {
         let node = Box::into_raw(Box::new(Node::new(val)));
+
+        let mut old_top = self.top.load(Acquire);
         loop {
-            let old_top = self.top.load(Acquire);
+            // SAFETY: We know that this pointer is valid, we just made it
             unsafe { &*node }.next.store(old_top, Release);
-            if self
-                .top
-                .compare_exchange(old_top, node, SeqCst, Relaxed)
-                .is_ok()
-            {
-                break;
+
+            // We want to exchange the top with our new node, but only if the top is unchanged
+            match self.top.compare_exchange(old_top, node, SeqCst, Acquire) {
+                // The exchange was successful, the node has been pushed!
+                // We can now update the count of the list and exit the loop
+                Ok(_) => {
+                    // The `Release` ordering here makes the load part of the
+                    // operation `Relaxed`, but we don't care about that.
+                    self.count.fetch_add(1, Release);
+                    break;
+                }
+                // The value has changed, we update `old_top` to reflect this
+                Err(current_top) => old_top = current_top,
             }
         }
+
         unsafe { &(*node).val }
     }
 
+    /// Create an iterator over the stack
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
             next: AtomicPtr::new(self.top.load(SeqCst)),
@@ -81,7 +104,7 @@ impl<T> Drop for SharedStack<T> {
     fn drop(&mut self) {
         let mut current = self.top.load(SeqCst);
         while !current.is_null() {
-            let next = unsafe { (*current).next.load(SeqCst) };
+            let next = unsafe { (*current).next.load(Acquire) };
             unsafe { drop(Box::from_raw(current)) };
             current = next;
         }
