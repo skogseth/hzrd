@@ -226,7 +226,7 @@ impl HzrdPtr {
 
     /// Try to aquire the hazard pointer
     pub fn try_acquire(&self) -> Option<&Self> {
-        match self.0.compare_exchange(0, dummy_addr(), Relaxed, Relaxed) {
+        match self.0.compare_exchange(0, dummy_addr(), SeqCst, Relaxed) {
             Ok(_) => Some(self),
             Err(_) => None,
         }

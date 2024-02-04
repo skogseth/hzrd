@@ -145,15 +145,12 @@ pub struct GlobalDomain;
 impl GlobalDomain {
     #[cfg(test)]
     pub(crate) fn number_of_hzrd_ptrs(&self) -> usize {
-        HAZARD_POINTERS.iter().count()
+        HAZARD_POINTERS.count()
     }
 
     #[cfg(test)]
     pub(crate) fn number_of_retired_ptrs(&self) -> usize {
-        LOCAL_RETIRED_POINTERS.with(|cell| {
-            let retired_ptrs = unsafe { &*cell.0.get() };
-            retired_ptrs.len()
-        })
+        LOCAL_RETIRED_POINTERS.with(|cell| unsafe { (*cell.0.get()).len() })
     }
 }
 
@@ -285,7 +282,7 @@ impl SharedDomain {
 
     #[cfg(test)]
     pub(crate) fn number_of_hzrd_ptrs(&self) -> usize {
-        self.hzrd_ptrs.iter().count()
+        self.hzrd_ptrs.count()
     }
 
     #[cfg(test)]
@@ -440,12 +437,12 @@ impl LocalDomain {
 
     #[cfg(test)]
     pub(crate) fn number_of_hzrd_ptrs(&self) -> usize {
-        unsafe { &*self.hzrd_ptrs.get() }.iter().count()
+        unsafe { (*self.hzrd_ptrs.get()).len() }
     }
 
     #[cfg(test)]
     pub(crate) fn number_of_retired_ptrs(&self) -> usize {
-        unsafe { &*self.retired_ptrs.get() }.len()
+        unsafe { (*self.retired_ptrs.get()).len() }
     }
 }
 
