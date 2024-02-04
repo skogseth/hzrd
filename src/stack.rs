@@ -64,6 +64,19 @@ impl<T> SharedStack<T> {
     }
 
     /// Create an iterator over the stack
+    pub fn push_mut(&mut self, val: T) -> &mut T {
+        let node = Box::into_raw(Box::new(Node::new(val)));
+
+        let old_top = self.top.load(Acquire);
+        unsafe { &*node }.next.store(old_top, Release);
+
+        // This should always succeed
+        let _exchange_result = self.top.compare_exchange(old_top, node, SeqCst, Relaxed);
+        debug_assert!(_exchange_result.is_ok());
+
+        unsafe { &mut (*node).val }
+    }
+
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
             next: AtomicPtr::new(self.top.load(SeqCst)),
@@ -78,15 +91,6 @@ impl<T> SharedStack<T> {
     {
         self.iter().copied().collect()
     }
-
-    /// SAFETY: Caller must make sure no one else is reading from the stack
-    pub unsafe fn take(&self) -> Self {
-        let top = self.top.swap(std::ptr::null_mut(), SeqCst);
-
-        Self {
-            top: AtomicPtr::new(top),
-        }
-    }
 }
 
 impl<T: Debug> Debug for SharedStack<T> {
@@ -98,6 +102,24 @@ impl<T: Debug> Debug for SharedStack<T> {
 impl<T> Default for SharedStack<T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<T> FromIterator<T> for SharedStack<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let mut stack = SharedStack::new();
+        for item in iter {
+            stack.push_mut(item);
+        }
+        stack
+    }
+}
+
+impl<T> Extend<T> for SharedStack<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        for item in iter {
+            self.push_mut(item);
+        }
     }
 }
 
@@ -232,12 +254,9 @@ mod tests {
     }
 
     #[test]
-    fn into_iter() {
-        let stack = SharedStack::new();
-        stack.push(String::from("Hello"));
-        stack.push(String::from("World"));
-
-        let list: Vec<String> = stack.into_iter().collect();
-        assert_eq!(list, ["World", "Hello"]);
+    fn iterator() {
+        let mut stack = SharedStack::from_iter([String::from("A"), String::from("B")]);
+        stack.extend([String::from("C"), String::from("D")]);
+        assert_eq!(Vec::from_iter(stack), ["D", "C", "B", "A"]);
     }
 }
