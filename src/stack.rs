@@ -92,11 +92,11 @@ impl<T> SharedStack<T> {
     pub fn push_mut(&mut self, val: T) -> &mut T {
         let node = Box::into_raw(Box::new(Node::new(val)));
 
-        let old_top = self.top.load(Acquire);
-        unsafe { &*node }.next.store(old_top, Release);
+        let old_top = self.top.load(SeqCst);
+        unsafe { &*node }.next.store(old_top, SeqCst);
 
         // This should always succeed
-        let _exchange_result = self.top.compare_exchange(old_top, node, SeqCst, Relaxed);
+        let _exchange_result = self.top.compare_exchange(old_top, node, SeqCst, SeqCst);
         debug_assert!(_exchange_result.is_ok());
 
         unsafe { &mut (*node).val }
@@ -213,13 +213,13 @@ impl<'t, T> Iterator for Iter<'t, T> {
     type Item = &'t T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let next = self.next.load(Acquire);
+        let next = self.next.load(SeqCst);
         if next.is_null() {
             return None;
         }
         let Node { val, next } = unsafe { &*next };
-        let new_next = next.load(Acquire);
-        self.next.store(new_next, Release);
+        let new_next = next.load(SeqCst);
+        self.next.store(new_next, SeqCst);
         Some(val)
     }
 }
