@@ -62,11 +62,10 @@ mod private {
 
 // ------------------------------------------
 
-use std::ops::Deref;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering::*};
 
-use crate::core::{Domain, HzrdPtr, RetiredPtr};
+use crate::core::{Action, Domain, HzrdPtr, ReadHandle, RetiredPtr};
 
 // -------------------------------------
 
@@ -290,89 +289,6 @@ unsafe impl<T: Send + Sync, D: Send + Sync> Sync for HzrdCell<T, D> {}
 
 // ------------------------------
 
-#[derive(Debug, Clone, Copy)]
-enum Action {
-    Reset,
-    Release,
-}
-
-/**
-Holds a reference to a read value. The value is kept alive by a hazard pointer.
-
-Note that the reference held by the handle is to the value as it was when it was read.
-If the cell is written to during the lifetime of the handle this will not be reflected in its value.
-
-# Example
-```
-# use hzrd::HzrdCell;
-let cell = HzrdCell::new(vec![1, 2, 3, 4]);
-
-// Read the value and hold on to a reference to the value
-let handle = cell.read();
-assert_eq!(handle[..], [1, 2, 3, 4]);
-
-// NOTE: The value is not updated when the cell is written to
-cell.set(Vec::new());
-assert_eq!(handle[..], [1, 2, 3, 4]);
-```
-*/
-#[derive(Debug)]
-pub struct ReadHandle<'hzrd, T> {
-    value: &'hzrd T,
-    hzrd_ptr: &'hzrd HzrdPtr,
-    action: Action,
-}
-
-impl<'hzrd, T> ReadHandle<'hzrd, T> {
-    unsafe fn read_unchecked(
-        value: &'hzrd AtomicPtr<T>,
-        hzrd_ptr: &'hzrd HzrdPtr,
-        action: Action,
-    ) -> Self {
-        let mut ptr = value.load(SeqCst);
-        loop {
-            // SAFETY: Non-null ptr
-            unsafe { hzrd_ptr.protect(ptr) };
-
-            // We now need to keep updating it until it is in a consistent state
-            let new_ptr = value.load(Acquire);
-            if ptr == new_ptr {
-                break;
-            } else {
-                ptr = new_ptr;
-            }
-        }
-
-        // SAFETY: This pointer is now held valid by the hazard pointer
-        let value = unsafe { &*ptr };
-
-        Self {
-            value,
-            hzrd_ptr,
-            action,
-        }
-    }
-}
-
-impl<T> Deref for ReadHandle<'_, T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        self.value
-    }
-}
-
-impl<T> Drop for ReadHandle<'_, T> {
-    fn drop(&mut self) {
-        // SAFETY: We are dropping so `value` will never be accessed after this
-        match self.action {
-            Action::Reset => unsafe { self.hzrd_ptr.reset() },
-            Action::Release => unsafe { self.hzrd_ptr.release() },
-        }
-    }
-}
-
-// ------------------------------
-
 /**
 A reader object for a specific [`HzrdCell`]
 
@@ -495,7 +411,7 @@ unsafe impl<T: Send + Sync> Sync for HzrdReader<'_, T> {}
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Barrier};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use super::*;
@@ -673,88 +589,6 @@ mod tests {
                     std::hint::spin_loop();
                 }
                 cell.set(String::from("world"));
-            });
-
-            for string in (0..40).map(|i| i.to_string()) {
-                s.spawn(|| cell.set(string));
-            }
-        });
-    }
-
-    #[test]
-    fn read_unchecked() {
-        let cell = HzrdCell::new_in(0, SharedDomain::new());
-
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                let value = &cell.value;
-                let hzrd_ptr = cell.domain.hzrd_ptr();
-                while unsafe { *ReadHandle::read_unchecked(value, hzrd_ptr, Action::Release) } != 32
-                {
-                    std::hint::spin_loop();
-                }
-                cell.set(-1);
-            });
-
-            for i in 0..40 {
-                let cell = &cell;
-                s.spawn(move || {
-                    cell.set(i);
-                });
-            }
-        });
-    }
-
-    #[test]
-    fn stress_hzrd_ptr() {
-        let cell = HzrdCell::new(String::new());
-        let barrier = Barrier::new(2);
-
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                barrier.wait();
-                let _hzrd_ptrs: Vec<_> = (0..40).map(|_| cell.domain.hzrd_ptr()).collect();
-            });
-
-            s.spawn(|| {
-                barrier.wait();
-                for _ in 0..40 {
-                    cell.set(String::from("Hello world"));
-                }
-            });
-        });
-    }
-
-    #[test]
-    fn stress_test_read() {
-        let cell = HzrdCell::new(String::new());
-        let barrier = Barrier::new(2);
-
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                barrier.wait();
-                for _ in 0..40 {
-                    let _ = cell.read();
-                }
-            });
-
-            s.spawn(|| {
-                barrier.wait();
-                for _ in 0..40 {
-                    cell.set(String::from("Hello world"));
-                }
-            });
-        });
-    }
-
-    #[test]
-    fn holding_handles() {
-        let cell = HzrdCell::new_in(String::from("hello"), SharedDomain::new());
-
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                std::thread::sleep(Duration::from_millis(1));
-                let _handles: Vec<_> = (0..40).map(|_| cell.read()).collect();
             });
 
             for string in (0..40).map(|i| i.to_string()) {

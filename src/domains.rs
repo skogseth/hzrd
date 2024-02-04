@@ -139,6 +139,7 @@ cell_1.reclaim();
 # Thread local garbage
 There is some more complexity to the garbage collection in `GlobalDomain`: Each thread holds its own local garbage, as well as access to some garbage shared between all threads. If a thread closes down with local garbage still remaining (it will attempt one last cleanup before closing), then that garbage will be moved to the shared garbage. Whenever a thread does garbage collection it will first try to clean up the local garbage it holds, followed by an attempt to clean up the shared garbage. However, since the shared garbage is locked by a [`Mutex`](`std::sync::Mutex`) it will only attempt to do soM; if the shared garbage is locked by another thread this step will be skipped.
 */
+#[derive(Clone, Copy)]
 pub struct GlobalDomain;
 
 impl GlobalDomain {
