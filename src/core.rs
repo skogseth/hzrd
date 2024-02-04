@@ -60,8 +60,44 @@ pub struct ReadHandle<'hzrd, T> {
 
 impl<'hzrd, T> ReadHandle<'hzrd, T> {
     /**
+    Read value of an atomic pointer and protect the reference using a hazard pointer.
+
     # Safety
-    Value of atomic pointer must be held valid for the lifetime of the [`ReadHandle`]
+    - The caller must be the current "owner" of the hazard pointer
+    - The value of the atomic pointer must be protected by the given hazard pointer
+    - The hazard pointer must be correctly handled with respect to the action performed on drop
+
+    # Example
+    ```
+    use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicPtr, Ordering::*};
+
+    use hzrd::core::{Action, Domain, ReadHandle, RetiredPtr};
+    use hzrd::domains::GlobalDomain;
+
+    let value = AtomicPtr::new(Box::into_raw(Box::new(false)));
+    let domain = GlobalDomain;
+
+    let set_value = |new_value| {
+        let new_ptr = Box::into_raw(Box::new(new_value));
+        let old_ptr = value.swap(new_ptr, SeqCst);
+        let non_null_ptr = unsafe { NonNull::new_unchecked(old_ptr) };
+        domain.retire(unsafe { RetiredPtr::new(non_null_ptr) });
+    };
+
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let hzrd_ptr = domain.hzrd_ptr();
+            let state = unsafe { ReadHandle::read_unchecked(&value, hzrd_ptr, Action::Release) };
+            println!("{}", *state);
+        });
+
+        set_value(true);
+    });
+
+    // Clean up the value still held by the atomic pointer
+    let _ = unsafe { Box::from_raw(value.load(SeqCst)) };
+    ```
     */
     pub unsafe fn read_unchecked(
         value: &'hzrd AtomicPtr<T>,
@@ -70,7 +106,7 @@ impl<'hzrd, T> ReadHandle<'hzrd, T> {
     ) -> Self {
         let mut ptr = value.load(SeqCst);
         loop {
-            // SAFETY: Non-null ptr
+            // SAFETY: ptr is not null
             unsafe { hzrd_ptr.protect(ptr) };
 
             // We now need to keep updating it until it is in a consistent state
@@ -202,8 +238,10 @@ impl HzrdPtr {
     # Safety
     - The caller must be the current "owner" of the hazard pointer
     - The caller must assert that the ptr did not change before the value was stored
+    - The pointer may not be null
     */
     pub unsafe fn protect<T>(&self, ptr: *mut T) {
+        debug_assert!(!ptr.is_null());
         self.0.store(ptr as usize, Release);
     }
 
@@ -222,7 +260,7 @@ impl HzrdPtr {
 
     # Safety
     - The caller must be the current "owner" of the hazard pointer
-    - The hazard cell must be reaquired after calling this using [`try_acquire`](`HzrdPtr::try_acquire`)
+    - The hazard cell must be re-aquired after calling this using [`try_acquire`](`HzrdPtr::try_acquire`)
     */
     pub unsafe fn release(&self) {
         self.0.store(0, Release);
