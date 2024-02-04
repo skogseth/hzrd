@@ -21,6 +21,7 @@ pub struct SharedStack<T> {
 }
 
 impl<T> SharedStack<T> {
+    /// Create a new, empty stack
     pub const fn new() -> Self {
         Self {
             top: AtomicPtr::new(std::ptr::null_mut()),
@@ -28,27 +29,41 @@ impl<T> SharedStack<T> {
         }
     }
 
+    /// Return the current count of the stack
     pub fn count(&self) -> usize {
-        self.count.load(SeqCst)
+        // We can use `Relaxed` ordering here since the value
+        // will be correctly updated on the previous store
+        self.count.load(Relaxed)
     }
 
+    /// Push a new value onto the stack and return a reference to the value
     pub fn push(&self, val: T) -> &T {
         let node = Box::into_raw(Box::new(Node::new(val)));
+
+        let mut old_top = self.top.load(SeqCst);
         loop {
-            let old_top = self.top.load(Acquire);
-            unsafe { &*node }.next.store(old_top, Release);
-            if self
-                .top
-                .compare_exchange(old_top, node, SeqCst, Relaxed)
-                .is_ok()
-            {
-                self.count.fetch_add(1, SeqCst);
-                break;
+            // SAFETY: We know that this pointer is valid, we just made it
+            unsafe { &*node }.next.store(old_top, SeqCst);
+
+            // We want to exchange the top with our new node, but only if the top is unchanged
+            match self.top.compare_exchange(old_top, node, SeqCst, SeqCst) {
+                // The exchange was successful, the node has been pushed!
+                // We can now update the count of the list and exit the loop
+                Ok(_) => {
+                    // The `Release` ordering here makes the load part of the
+                    // operation `Relaxed`, but we don't care about that.
+                    self.count.fetch_add(1, Release);
+                    break;
+                }
+                // The value has changed, we update `old_top` to reflect this
+                Err(current_top) => old_top = current_top,
             }
         }
+
         unsafe { &(*node).val }
     }
 
+    /// Create an iterator over the stack
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
             next: AtomicPtr::new(self.top.load(SeqCst)),
@@ -106,13 +121,13 @@ impl<'t, T> Iterator for Iter<'t, T> {
     type Item = &'t T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let next = self.next.load(Acquire);
+        let next = self.next.load(SeqCst);
         if next.is_null() {
             return None;
         }
         let Node { val, next } = unsafe { &*next };
-        let new_next = next.load(Acquire);
-        self.next.store(new_next, Release);
+        let new_next = next.load(SeqCst);
+        self.next.store(new_next, SeqCst);
         Some(val)
     }
 }
