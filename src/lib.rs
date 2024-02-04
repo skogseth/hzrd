@@ -411,7 +411,7 @@ unsafe impl<T: Send + Sync> Sync for HzrdReader<'_, T> {}
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Barrier};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use super::*;
@@ -594,26 +594,6 @@ mod tests {
             for string in (0..40).map(|i| i.to_string()) {
                 s.spawn(|| cell.set(string));
             }
-        });
-    }
-
-    #[test]
-    fn stress_hzrd_ptr() {
-        let cell = HzrdCell::new(String::new());
-        let barrier = Barrier::new(2);
-
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                barrier.wait();
-                let _hzrd_ptrs: Vec<_> = (0..40).map(|_| cell.domain.hzrd_ptr()).collect();
-            });
-
-            s.spawn(|| {
-                barrier.wait();
-                for _ in 0..40 {
-                    cell.set(String::from("Hello world"));
-                }
-            });
         });
     }
 }

@@ -35,6 +35,25 @@ fn read_unchecked(domain: impl Domain + Send + Sync) {
     let _ = unsafe { Box::from_raw(value.load(SeqCst)) };
 }
 
+fn hzrd_ptrs(domain: impl Domain + Send + Sync + Copy) {
+    let cell = HzrdCell::new_in(String::new(), domain);
+    let barrier = Barrier::new(2);
+
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            barrier.wait();
+            let _hzrd_ptrs: Vec<_> = (0..40).map(|_| domain.hzrd_ptr()).collect();
+        });
+
+        s.spawn(|| {
+            barrier.wait();
+            for _ in 0..40 {
+                cell.set(String::from("Hello world"));
+            }
+        });
+    });
+}
+
 fn read_cell(domain: impl Domain + Send + Sync) {
     let cell = HzrdCell::new_in(String::new(), domain);
     let barrier = Barrier::new(2);
@@ -80,6 +99,11 @@ mod global_domain {
     }
 
     #[test]
+    fn hzrd_ptrs() {
+        super::hzrd_ptrs(GlobalDomain);
+    }
+
+    #[test]
     fn read_cell() {
         super::read_cell(GlobalDomain);
     }
@@ -96,6 +120,11 @@ mod shared_domain {
     #[test]
     fn read_unchecked() {
         super::read_unchecked(SharedDomain::new());
+    }
+
+    #[test]
+    fn hzrd_ptrs() {
+        super::hzrd_ptrs(&SharedDomain::new());
     }
 
     #[test]
