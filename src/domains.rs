@@ -49,7 +49,7 @@ impl HzrdPtrs {
 }
 
 impl HzrdPtrs<true> {
-    fn load_from_cache<'t>(hzrd_ptrs: impl Iterator<Item = &'t HzrdPtr>) -> Self {
+    fn load_using_cache<'t>(hzrd_ptrs: impl Iterator<Item = &'t HzrdPtr>) -> Self {
         let mut hzrd_ptrs_cache: Vec<usize> = HAZARD_POINTERS_CACHE.with(|cell| cell.take());
         hzrd_ptrs_cache.clear();
         hzrd_ptrs_cache.extend(hzrd_ptrs.map(HzrdPtr::get));
@@ -197,27 +197,10 @@ unsafe impl Domain for GlobalDomain {
     }
 
     fn reclaim(&self) {
-        let hzrd_ptrs = HzrdPtrs::load_from_cache(HAZARD_POINTERS.iter());
+        let hzrd_ptrs = HzrdPtrs::load_using_cache(HAZARD_POINTERS.iter());
 
         LOCAL_RETIRED_POINTERS.with(|cell| {
             let retired_ptrs = unsafe { &mut *cell.0.get() };
-            retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
-        });
-
-        if let Ok(mut retired_ptrs) = SHARED_RETIRED_POINTERS.try_lock() {
-            retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
-        }
-    }
-
-    // -------------------------------------
-
-    // Override this to avoid mutable aliasing
-    fn retire(&self, ret_ptr: RetiredPtr) {
-        let hzrd_ptrs = HzrdPtrs::load_from_cache(HAZARD_POINTERS.iter());
-
-        LOCAL_RETIRED_POINTERS.with(|cell| {
-            let retired_ptrs = unsafe { &mut *cell.0.get() };
-            retired_ptrs.push(ret_ptr);
             retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
         });
 
@@ -339,7 +322,7 @@ unsafe impl Domain for SharedDomain {
             return;
         }
 
-        let hzrd_ptrs = HzrdPtrs::load_from_cache(self.hzrd_ptrs.iter());
+        let hzrd_ptrs = HzrdPtrs::load_using_cache(self.hzrd_ptrs.iter());
         retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
     }
 
@@ -358,7 +341,7 @@ unsafe impl Domain for SharedDomain {
             return;
         }
 
-        let hzrd_ptrs = HzrdPtrs::load_from_cache(self.hzrd_ptrs.iter());
+        let hzrd_ptrs = HzrdPtrs::load_using_cache(self.hzrd_ptrs.iter());
         retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
     }
 }
@@ -491,7 +474,7 @@ unsafe impl Domain for LocalDomain {
         let retired_ptrs = unsafe { &mut *self.retired_ptrs.get() };
         let hzrd_ptrs = unsafe { &mut *self.hzrd_ptrs.get() };
 
-        let hzrd_ptrs = HzrdPtrs::load_from_cache(hzrd_ptrs.iter().map(SharedCell::get));
+        let hzrd_ptrs = HzrdPtrs::load_using_cache(hzrd_ptrs.iter().map(SharedCell::get));
         retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
     }
 }
@@ -519,7 +502,7 @@ mod tests {
         assert_eq!(domain.number_of_hzrd_ptrs(), 1);
 
         unsafe { hzrd_ptr.protect(ptr.as_ptr()) };
-        let hzrd_ptrs = HzrdPtrs::load_from_cache(HAZARD_POINTERS.iter());
+        let hzrd_ptrs = HzrdPtrs::load_using_cache(HAZARD_POINTERS.iter());
         assert!(hzrd_ptrs.contains(ptr.as_ptr() as usize));
 
         domain.retire(unsafe { RetiredPtr::new(ptr) });
@@ -543,7 +526,7 @@ mod tests {
         assert_eq!(domain.number_of_hzrd_ptrs(), 1);
 
         unsafe { hzrd_ptr.protect(ptr.as_ptr()) };
-        let hzrd_ptrs = HzrdPtrs::load_from_cache(domain.hzrd_ptrs.iter());
+        let hzrd_ptrs = HzrdPtrs::load_using_cache(domain.hzrd_ptrs.iter());
         assert!(hzrd_ptrs.contains(ptr.as_ptr() as usize));
 
         domain.retire(unsafe { RetiredPtr::new(ptr) });
@@ -568,7 +551,7 @@ mod tests {
 
         unsafe { hzrd_ptr.protect(ptr.as_ptr()) };
         let hzrd_ptrs = unsafe { &*domain.hzrd_ptrs.get() };
-        let hzrd_ptrs = HzrdPtrs::load_from_cache(hzrd_ptrs.iter().map(SharedCell::get));
+        let hzrd_ptrs = HzrdPtrs::load_using_cache(hzrd_ptrs.iter().map(SharedCell::get));
         assert!(hzrd_ptrs.contains(ptr.as_ptr() as usize));
 
         domain.retire(unsafe { RetiredPtr::new(ptr) });
