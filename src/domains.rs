@@ -13,7 +13,7 @@ The default domain used by [`HzrdCell`](`crate::HzrdCell`) is [`GlobalDomain`], 
 
 use std::cell::{Cell, UnsafeCell};
 use std::collections::{BTreeSet, LinkedList};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use crate::core::{Domain, HzrdPtr, RetiredPtr};
 use crate::stack::SharedStack;
@@ -23,7 +23,6 @@ use crate::stack::SharedStack;
 /*
 # Todo:
 - Add options for caching:
-  -> No caching
   -> Maximum size of cache?
   -> Fixed size for cache?
   -> Pre-allocated cache?
@@ -34,32 +33,85 @@ use crate::stack::SharedStack;
 
 // -------------------------------------
 
+/**
+This variable can be used to configure the behavior of the domains provided by this crate
+
+The variable can only be set once, and this must happen before any operation on any of the domains. If the variable has not been configured before the first access then the default value is used (see [`Config::default`]). The variable uses a standard [`OnceLock`](`std::sync::OnceLock`), and can be used as such:
+```
+# use hzrd::domains::{Config, GLOBAL_CONFIG};
+let config = Config::default().caching(true);
+GLOBAL_CONFIG.set(config).unwrap();
+```
+*/
+pub static GLOBAL_CONFIG: OnceLock<Config> = OnceLock::new();
+
+fn global_config() -> &'static Config {
+    GLOBAL_CONFIG.get_or_init(Config::default)
+}
+
+/**
+Config options for domains in this module
+
+If you want to change the global config options then this can be done via [`GLOBAL_CONFIG`]
+*/
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Config {
+    caching: bool,
+}
+
+impl Config {
+    /// Enable/disable caching (disabled by default)
+    pub fn caching(self, caching: bool) -> Self {
+        Self { caching, ..self }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self { caching: false }
+    }
+}
+
+// -------------------------------------
+
 thread_local! {
     static HAZARD_POINTERS_CACHE: Cell<Vec<usize>> = const { Cell::new(Vec::new()) };
 }
 
 /// Holds a loaded set of hazard pointers
-struct HzrdPtrs<const CACHING: bool = false>(Vec<usize>);
-
-impl HzrdPtrs {
-    #[allow(unused)]
-    fn load<'t>(hzrd_ptrs: impl Iterator<Item = &'t HzrdPtr>) -> Self {
-        Self(Vec::from_iter(hzrd_ptrs.map(HzrdPtr::get)))
-    }
+struct HzrdPtrs {
+    list: Vec<usize>,
+    caching: bool,
 }
 
-impl HzrdPtrs<true> {
-    fn load_using_cache<'t>(hzrd_ptrs: impl Iterator<Item = &'t HzrdPtr>) -> Self {
+impl HzrdPtrs {
+    fn load<'t>(hzrd_ptrs: impl Iterator<Item = &'t HzrdPtr>) -> Self {
+        match global_config().caching {
+            false => Self::new(hzrd_ptrs),
+            true => Self::cached(hzrd_ptrs),
+        }
+    }
+
+    fn new<'t>(hzrd_ptrs: impl Iterator<Item = &'t HzrdPtr>) -> Self {
+        Self {
+            list: Vec::from_iter(hzrd_ptrs.map(HzrdPtr::get)),
+            caching: false,
+        }
+    }
+
+    fn cached<'t>(hzrd_ptrs: impl Iterator<Item = &'t HzrdPtr>) -> Self {
         let mut hzrd_ptrs_cache: Vec<usize> = HAZARD_POINTERS_CACHE.with(|cell| cell.take());
         hzrd_ptrs_cache.clear();
         hzrd_ptrs_cache.extend(hzrd_ptrs.map(HzrdPtr::get));
-        Self(hzrd_ptrs_cache)
-    }
-}
 
-impl<const CACHING: bool> HzrdPtrs<CACHING> {
+        Self {
+            list: hzrd_ptrs_cache,
+            caching: true,
+        }
+    }
+
     fn contains(&self, addr: usize) -> bool {
-        self.0.contains(&addr)
+        self.list.contains(&addr)
     }
 }
 
@@ -70,10 +122,10 @@ If the cache is loaded twice in overlap then only the first will get a cache-hit
 The second load will then need to allocate all memory needed.
 The cache will be overwritten by the last to access it.
 */
-impl<const CACHING: bool> Drop for HzrdPtrs<CACHING> {
+impl Drop for HzrdPtrs {
     fn drop(&mut self) {
-        if CACHING {
-            let list = std::mem::take(&mut self.0);
+        if self.caching {
+            let list = std::mem::take(&mut self.list);
             HAZARD_POINTERS_CACHE.with(|cell| cell.set(list));
         }
     }
@@ -197,7 +249,7 @@ unsafe impl Domain for GlobalDomain {
     }
 
     fn reclaim(&self) {
-        let hzrd_ptrs = HzrdPtrs::load_using_cache(HAZARD_POINTERS.iter());
+        let hzrd_ptrs = HzrdPtrs::load(HAZARD_POINTERS.iter());
 
         LOCAL_RETIRED_POINTERS.with(|cell| {
             let retired_ptrs = unsafe { &mut *cell.0.get() };
@@ -322,7 +374,7 @@ unsafe impl Domain for SharedDomain {
             return;
         }
 
-        let hzrd_ptrs = HzrdPtrs::load_using_cache(self.hzrd_ptrs.iter());
+        let hzrd_ptrs = HzrdPtrs::load(self.hzrd_ptrs.iter());
         retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
     }
 
@@ -341,7 +393,7 @@ unsafe impl Domain for SharedDomain {
             return;
         }
 
-        let hzrd_ptrs = HzrdPtrs::load_using_cache(self.hzrd_ptrs.iter());
+        let hzrd_ptrs = HzrdPtrs::load(self.hzrd_ptrs.iter());
         retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
     }
 }
@@ -474,7 +526,7 @@ unsafe impl Domain for LocalDomain {
         let retired_ptrs = unsafe { &mut *self.retired_ptrs.get() };
         let hzrd_ptrs = unsafe { &mut *self.hzrd_ptrs.get() };
 
-        let hzrd_ptrs = HzrdPtrs::load_using_cache(hzrd_ptrs.iter().map(SharedCell::get));
+        let hzrd_ptrs = HzrdPtrs::load(hzrd_ptrs.iter().map(SharedCell::get));
         retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
     }
 }
@@ -502,7 +554,7 @@ mod tests {
         assert_eq!(domain.number_of_hzrd_ptrs(), 1);
 
         unsafe { hzrd_ptr.protect(ptr.as_ptr()) };
-        let hzrd_ptrs = HzrdPtrs::load_using_cache(HAZARD_POINTERS.iter());
+        let hzrd_ptrs = HzrdPtrs::load(HAZARD_POINTERS.iter());
         assert!(hzrd_ptrs.contains(ptr.as_ptr() as usize));
 
         domain.retire(unsafe { RetiredPtr::new(ptr) });
@@ -526,7 +578,7 @@ mod tests {
         assert_eq!(domain.number_of_hzrd_ptrs(), 1);
 
         unsafe { hzrd_ptr.protect(ptr.as_ptr()) };
-        let hzrd_ptrs = HzrdPtrs::load_using_cache(domain.hzrd_ptrs.iter());
+        let hzrd_ptrs = HzrdPtrs::load(domain.hzrd_ptrs.iter());
         assert!(hzrd_ptrs.contains(ptr.as_ptr() as usize));
 
         domain.retire(unsafe { RetiredPtr::new(ptr) });
@@ -551,7 +603,7 @@ mod tests {
 
         unsafe { hzrd_ptr.protect(ptr.as_ptr()) };
         let hzrd_ptrs = unsafe { &*domain.hzrd_ptrs.get() };
-        let hzrd_ptrs = HzrdPtrs::load_using_cache(hzrd_ptrs.iter().map(SharedCell::get));
+        let hzrd_ptrs = HzrdPtrs::load(hzrd_ptrs.iter().map(SharedCell::get));
         assert!(hzrd_ptrs.contains(ptr.as_ptr() as usize));
 
         domain.retire(unsafe { RetiredPtr::new(ptr) });
