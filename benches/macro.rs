@@ -1,6 +1,4 @@
-use std::hint::black_box;
-
-use criterion::{criterion_group, criterion_main, Criterion};
+use std::sync::Barrier;
 
 use hzrd::{HzrdCell, LocalDomain};
 
@@ -29,8 +27,6 @@ fn back_and_forth(n: usize) {
 }
 
 fn local_writer(n: usize) {
-    use std::sync::Barrier;
-
     let cell = HzrdCell::new_in(0, LocalDomain::new());
     let barrier = Barrier::new(2);
 
@@ -51,14 +47,11 @@ fn local_writer(n: usize) {
     });
 }
 
-fn single_threaded(n: usize) {
-    let cell = HzrdCell::new(0);
+// -------------------------------------
 
-    for i in 0..n {
-        let _handle = cell.get();
-        cell.set(i)
-    }
-}
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, Criterion};
 
 pub fn hzrd_cell(c: &mut Criterion) {
     c.bench_function("back-and-forth", |b| {
@@ -67,10 +60,6 @@ pub fn hzrd_cell(c: &mut Criterion) {
 
     c.bench_function("local-writer", |b| {
         b.iter(|| local_writer(black_box(1_000_000)))
-    });
-
-    c.bench_function("single-threaded", |b| {
-        b.iter(|| single_threaded(black_box(1_000_000)))
     });
 }
 
