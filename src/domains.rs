@@ -20,19 +20,6 @@ use crate::stack::SharedStack;
 
 // -------------------------------------
 
-/*
-# Todo:
-- Add options for caching:
-  -> Maximum size of cache?
-  -> Fixed size for cache?
-  -> Pre-allocated cache?
-- Add option for bulk-reclaim (default to what?), use const generics?
-- Test HashSet for cache (BTreeSet can't reuse allocation?)
-
-*/
-
-// -------------------------------------
-
 /**
 This variable can be used to configure the behavior of the domains provided by this crate
 
@@ -54,15 +41,63 @@ Config options for domains in this module
 
 If you want to change the global config options then this can be done via [`GLOBAL_CONFIG`]
 */
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Config {
     caching: bool,
+    bulk_size: usize,
+    /*
+    Other possible config options:
+      - Maximum/fixed size cache
+      - Pre-allocate cache?
+    */
 }
 
 impl Config {
-    /// Enable/disable caching (disabled by default)
+    /// Enable/disable caching (default: `false`)
     pub fn caching(self, caching: bool) -> Self {
-        Self { caching }
+        Self { caching, ..self }
+    }
+
+    /**
+    Set bulk size (default: `1`)
+
+    The bulk size is the smallest amount of elements in a list of retired pointers that will cause memory reclamation to occur. Example: If the bulk size is `4`, then a call to `reclaim` will be a no-op until there is atleast `4` retired objects.
+
+    # Example
+    ```
+    use hzrd::HzrdCell;
+    use hzrd::core::Domain;
+    use hzrd::domains::{LocalDomain, Config, GLOBAL_CONFIG};
+
+    let my_config = Config::default().bulk_size(4);
+    GLOBAL_CONFIG.set(my_config).unwrap();
+
+    let domain = LocalDomain::new();
+    let cell = HzrdCell::new_in(0, &domain);
+
+    // Let's try and update the value a few times
+    cell.set(1); // Current garbage: { 0 }
+    cell.set(2); // Current garbage: { 0, 1 }
+    cell.set(3); // Current garbage: { 0, 1, 2 }
+
+    // This time we will not try to reclaim (we'll do that manually)
+    cell.just_set(4); // Current garbage: { 0, 1, 2, 3 }
+
+    // If we now reclaim memory it will reclaim all four
+    assert_eq!(domain.reclaim(), 4);
+    ```
+    */
+    pub fn bulk_size(self, bulk_size: usize) -> Self {
+        Self { bulk_size, ..self }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            caching: false,
+            bulk_size: 1,
+        }
     }
 }
 
@@ -247,27 +282,25 @@ unsafe impl Domain for GlobalDomain {
         let hzrd_ptrs = OnceCell::new();
         let hzrd_ptrs = || hzrd_ptrs.get_or_init(|| HzrdPtrs::load(HAZARD_POINTERS.iter()));
 
+        let try_reclaim = |retired_ptrs: &mut Vec<RetiredPtr>| -> usize {
+            let prev_size = retired_ptrs.len();
+
+            // Check if it's too small to reclaim
+            if prev_size < global_config().bulk_size {
+                return 0;
+            }
+
+            retired_ptrs.retain(|p| hzrd_ptrs().contains(p.addr()));
+            prev_size - retired_ptrs.len()
+        };
+
         let locally_reclaimed = LOCAL_RETIRED_POINTERS.with(|cell| {
             let retired_ptrs = unsafe { &mut *cell.0.get() };
-            let prev_size = retired_ptrs.len();
-            if prev_size > 0 {
-                retired_ptrs.retain(|p| hzrd_ptrs().contains(p.addr()));
-                prev_size - retired_ptrs.len()
-            } else {
-                0
-            }
+            try_reclaim(retired_ptrs)
         });
 
         let shared_reclaimed = match SHARED_RETIRED_POINTERS.try_lock() {
-            Ok(mut retired_ptrs) => {
-                let prev_size = retired_ptrs.len();
-                if prev_size > 0 {
-                    retired_ptrs.retain(|p| hzrd_ptrs().contains(p.addr()));
-                    prev_size - retired_ptrs.len()
-                } else {
-                    0
-                }
-            }
+            Ok(mut retired_ptrs) => try_reclaim(&mut retired_ptrs),
             Err(_) => 0,
         };
 
@@ -384,8 +417,8 @@ unsafe impl Domain for SharedDomain {
 
         let prev_size = retired_ptrs.len();
 
-        // Check if it's empty, no need to move forward otherwise
-        if prev_size == 0 {
+        // Check if it's too small to reclaim
+        if prev_size < global_config().bulk_size {
             return 0;
         }
 
@@ -406,8 +439,8 @@ unsafe impl Domain for SharedDomain {
 
         let prev_size = retired_ptrs.len();
 
-        // Check if it's empty, no need to move forward otherwise
-        if prev_size == 0 {
+        // Check if it's too small to reclaim
+        if prev_size < global_config().bulk_size {
             return 0;
         }
 
@@ -547,8 +580,8 @@ unsafe impl Domain for LocalDomain {
 
         let prev_size = retired_ptrs.len();
 
-        // Check if it's empty, no need to move forward otherwise
-        if prev_size == 0 {
+        // Check if it's too small to reclaim
+        if prev_size < global_config().bulk_size {
             return 0;
         }
 
