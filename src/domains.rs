@@ -13,7 +13,7 @@ The default domain used by [`HzrdCell`](`crate::HzrdCell`) is [`GlobalDomain`], 
 
 use std::cell::{Cell, OnceCell, UnsafeCell};
 use std::collections::{BTreeSet, LinkedList};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use crate::core::{Domain, HzrdPtr, RetiredPtr};
 use crate::stack::SharedStack;
@@ -364,7 +364,7 @@ let cell_2 = HzrdCell::new_in(false, Arc::clone(&custom_domain));
 #[derive(Debug)]
 pub struct SharedDomain {
     hzrd_ptrs: SharedStack<HzrdPtr>,
-    retired_ptrs: Mutex<Vec<RetiredPtr>>,
+    retired_ptrs: RwLock<SharedStack<RetiredPtr>>,
 }
 
 impl SharedDomain {
@@ -380,7 +380,7 @@ impl SharedDomain {
     pub const fn new() -> Self {
         Self {
             hzrd_ptrs: SharedStack::new(),
-            retired_ptrs: Mutex::new(Vec::new()),
+            retired_ptrs: RwLock::new(SharedStack::new()),
         }
     }
 
@@ -391,7 +391,7 @@ impl SharedDomain {
 
     #[cfg(test)]
     pub(crate) fn number_of_retired_ptrs(&self) -> usize {
-        self.retired_ptrs.lock().unwrap().len()
+        self.retired_ptrs.read().unwrap().count()
     }
 }
 
@@ -406,47 +406,28 @@ unsafe impl Domain for SharedDomain {
     }
 
     fn just_retire(&self, ret_ptr: RetiredPtr) {
-        self.retired_ptrs.lock().unwrap().push(ret_ptr);
+        self.retired_ptrs.read().unwrap().push(ret_ptr);
     }
 
     fn reclaim(&self) -> usize {
-        // Try to aquire lock, exit if it is taken
-        let Ok(mut retired_ptrs) = self.retired_ptrs.try_lock() else {
-            return 0;
-        };
-
-        let prev_size = retired_ptrs.len();
+        let mut retired_ptrs = self.retired_ptrs.write().unwrap();
 
         // Check if it's too small to reclaim
-        if prev_size < global_config().bulk_size {
+        if retired_ptrs.count() < global_config().bulk_size {
             return 0;
         }
 
         let hzrd_ptrs = HzrdPtrs::load(self.hzrd_ptrs.iter());
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
-        prev_size - retired_ptrs.len()
-    }
 
-    // -------------------------------------
-
-    // Override this for (hopefully) improved performance
-    fn retire(&self, ret_ptr: RetiredPtr) -> usize {
-        // Grab the lock to retired pointers
-        let mut retired_ptrs = self.retired_ptrs.lock().unwrap();
-
-        // And retire the given pointer
-        retired_ptrs.push(ret_ptr);
-
-        let prev_size = retired_ptrs.len();
-
-        // Check if it's too small to reclaim
-        if prev_size < global_config().bulk_size {
-            return 0;
+        let mut reclaimed = 0;
+        for p in std::mem::take(&mut *retired_ptrs) {
+            if hzrd_ptrs.contains(p.addr()) {
+                retired_ptrs.push_mut(p);
+            } else {
+                reclaimed += 1;
+            }
         }
-
-        let hzrd_ptrs = HzrdPtrs::load(self.hzrd_ptrs.iter());
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
-        prev_size - retired_ptrs.len()
+        reclaimed
     }
 }
 
