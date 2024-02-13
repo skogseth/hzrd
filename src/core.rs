@@ -12,7 +12,6 @@ These are used in the [`Domain`] interface, and can be considered the fundamenta
 
 // -------------------------------------
 
-use std::any::Any;
 use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 use std::rc::Rc;
@@ -288,9 +287,13 @@ unsafe impl Sync for HzrdPtr {}
 
 // -------------------------------------
 
-/// A retired pointer that will free the underlying value on drop
+/// Custom trait meant to signify only that the value can be deleted
+trait Delete {}
+impl<T> Delete for T {}
+
+/// A pointer that will free the underlying value on drop
 pub struct RetiredPtr {
-    ptr: NonNull<dyn Any>,
+    ptr: NonNull<dyn Delete>,
 }
 
 impl RetiredPtr {
@@ -314,7 +317,7 @@ impl RetiredPtr {
 impl Drop for RetiredPtr {
     fn drop(&mut self) {
         // SAFETY: No reference to this when dropped (and always heap allocated)
-        let _ = unsafe { Box::from_raw(self.ptr.as_ptr()) };
+        let _: Box<dyn Delete> = unsafe { Box::from_raw(self.ptr.as_ptr()) };
     }
 }
 
