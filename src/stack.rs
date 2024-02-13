@@ -15,13 +15,13 @@ impl<T> Node<T> {
     }
 }
 
-pub struct SharedStack<T> {
+pub struct SharedStack<T, const READ: bool = true> {
     top: AtomicPtr<Node<T>>,
     count: AtomicUsize,
 }
 
-impl<T> SharedStack<T> {
-    /// Create a new, empty stack
+/// Create a new, empty stack
+impl<T, const READ: bool> SharedStack<T, READ> {
     pub const fn new() -> Self {
         Self {
             top: AtomicPtr::new(std::ptr::null_mut()),
@@ -37,6 +37,21 @@ impl<T> SharedStack<T> {
     }
 
     /// Push a new value onto the stack and return a reference to the value
+    pub fn push_mut(&mut self, val: T) -> &mut T {
+        let node = Box::into_raw(Box::new(Node::new(val)));
+
+        let old_top = self.top.load(SeqCst);
+        unsafe { &*node }.next.store(old_top, Release);
+
+        // This should always succeed
+        let _exchange_result = self.top.compare_exchange(old_top, node, SeqCst, Relaxed);
+        debug_assert!(_exchange_result.is_ok());
+
+        unsafe { &mut (*node).val }
+    }
+}
+
+impl<T> SharedStack<T> {
     pub fn push(&self, val: T) -> &T {
         let node = Box::into_raw(Box::new(Node::new(val)));
 
@@ -63,6 +78,24 @@ impl<T> SharedStack<T> {
         unsafe { &(*node).val }
     }
 
+    /// Push a new value onto the stack and return a reference to the value
+    pub fn iter(&self) -> Iter<'_, T> {
+        Iter {
+            next: AtomicPtr::new(self.top.load(SeqCst)),
+            _marker: PhantomData,
+        }
+    }
+
+    #[cfg(test)]
+    fn to_vec(&self) -> Vec<T>
+    where
+        T: Copy,
+    {
+        self.iter().copied().collect()
+    }
+}
+
+impl<T> SharedStack<T, false> {
     /// Push a new value onto the stack
     pub fn only_push(&self, val: T) {
         let node = Box::into_raw(Box::new(Node::new(val)));
@@ -88,56 +121,29 @@ impl<T> SharedStack<T> {
         }
     }
 
-    /// Push a new value onto the stack and return a mutable reference to the value
-    pub fn push_mut(&mut self, val: T) -> &mut T {
-        let node = Box::into_raw(Box::new(Node::new(val)));
-
-        let old_top = self.top.load(SeqCst);
-        unsafe { &*node }.next.store(old_top, SeqCst);
-
-        // This should always succeed
-        let _exchange_result = self.top.compare_exchange(old_top, node, SeqCst, SeqCst);
-        debug_assert!(_exchange_result.is_ok());
-
-        unsafe { &mut (*node).val }
-    }
-
-    /// Create an iterator over the stack
-    pub fn iter(&self) -> Iter<'_, T> {
-        Iter {
-            next: AtomicPtr::new(self.top.load(SeqCst)),
-            _marker: PhantomData,
+    pub fn take(&self) -> Self {
+        let top = self.top.swap(std::ptr::null_mut(), SeqCst);
+        let count = self.count.swap(0, SeqCst);
+        Self {
+            top: AtomicPtr::new(top),
+            count: AtomicUsize::new(count),
         }
-    }
-
-    /// # Safety
-    /// The user must ensure that no-one is reading the list at the moment
-    pub unsafe fn take(&self) -> Self {
-        todo!()
-    }
-
-    #[cfg(test)]
-    fn to_vec(&self) -> Vec<T>
-    where
-        T: Copy,
-    {
-        self.iter().copied().collect()
     }
 }
 
-impl<T: Debug> Debug for SharedStack<T> {
+impl<T: Debug> Debug for SharedStack<T, true> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list().entries(self.iter()).finish()
     }
 }
 
-impl<T> Default for SharedStack<T> {
+impl<T, const READ: bool> Default for SharedStack<T, READ> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> FromIterator<T> for SharedStack<T> {
+impl<T, const READ: bool> FromIterator<T> for SharedStack<T, READ> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let mut stack = SharedStack::new();
         for item in iter {
@@ -147,7 +153,7 @@ impl<T> FromIterator<T> for SharedStack<T> {
     }
 }
 
-impl<T> Extend<T> for SharedStack<T> {
+impl<T, const READ: bool> Extend<T> for SharedStack<T, READ> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         for item in iter {
             self.push_mut(item);
@@ -155,7 +161,7 @@ impl<T> Extend<T> for SharedStack<T> {
     }
 }
 
-impl<T> IntoIterator for SharedStack<T> {
+impl<T, const READ: bool> IntoIterator for SharedStack<T, READ> {
     type Item = T;
     type IntoIter = IntoIter<T>;
     fn into_iter(self) -> Self::IntoIter {
@@ -165,7 +171,7 @@ impl<T> IntoIterator for SharedStack<T> {
     }
 }
 
-impl<'t, T> IntoIterator for &'t SharedStack<T> {
+impl<'t, T> IntoIterator for &'t SharedStack<T, true> {
     type Item = &'t T;
     type IntoIter = Iter<'t, T>;
     fn into_iter(self) -> Self::IntoIter {
@@ -173,7 +179,7 @@ impl<'t, T> IntoIterator for &'t SharedStack<T> {
     }
 }
 
-impl<T> Drop for SharedStack<T> {
+impl<T, const READ: bool> Drop for SharedStack<T, READ> {
     fn drop(&mut self) {
         let mut current = self.top.load(SeqCst);
         while !current.is_null() {
@@ -287,7 +293,8 @@ mod tests {
 
     #[test]
     fn iterator() {
-        let mut stack = SharedStack::from_iter([String::from("A"), String::from("B")]);
+        let mut stack: SharedStack<_, true> =
+            SharedStack::from_iter([String::from("A"), String::from("B")]);
         stack.extend([String::from("C"), String::from("D")]);
         assert_eq!(Vec::from_iter(stack), ["D", "C", "B", "A"]);
     }

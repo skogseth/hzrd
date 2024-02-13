@@ -164,7 +164,7 @@ impl Drop for HzrdPtrs {
 
 static HAZARD_POINTERS: SharedStack<HzrdPtr> = SharedStack::new();
 
-static SHARED_RETIRED_POINTERS: SharedStack<RetiredPtr> = SharedStack::new();
+static SHARED_RETIRED_POINTERS: SharedStack<RetiredPtr, false> = SharedStack::new();
 
 thread_local! {
     static LOCAL_RETIRED_POINTERS: LocalRetiredPtrs = const { LocalRetiredPtrs(UnsafeCell::new(Vec::new())) };
@@ -294,9 +294,8 @@ unsafe impl Domain for GlobalDomain {
             prev_size - retired_ptrs.len()
         });
 
-        let shared_retired_ptrs = unsafe { SHARED_RETIRED_POINTERS.take() };
         let mut shared_reclaimed = 0;
-        for p in shared_retired_ptrs {
+        for p in SHARED_RETIRED_POINTERS.take() {
             if hzrd_ptrs().contains(p.addr()) {
                 SHARED_RETIRED_POINTERS.only_push(p);
             } else {
@@ -312,7 +311,6 @@ impl std::fmt::Debug for GlobalDomain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut f = f.debug_struct("GlobalDomain");
         f.field("hzrd", &HAZARD_POINTERS);
-        f.field("shared_retired", &SHARED_RETIRED_POINTERS);
         f.field("local_retired", &LOCAL_RETIRED_POINTERS);
         f.finish_non_exhaustive()
     }
