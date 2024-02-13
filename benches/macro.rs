@@ -4,9 +4,11 @@ use hzrd::{HzrdCell, LocalDomain};
 
 fn back_and_forth(n: usize) {
     let cell = HzrdCell::new(None);
+    let barrier = Barrier::new(2);
 
     std::thread::scope(|s| {
         s.spawn(|| {
+            barrier.wait();
             for i in 0..n {
                 while cell.read().is_some() {
                     std::hint::spin_loop();
@@ -16,6 +18,7 @@ fn back_and_forth(n: usize) {
         });
 
         s.spawn(|| {
+            barrier.wait();
             for _ in 0..n {
                 while cell.read().is_none() {
                     std::hint::spin_loop();
@@ -55,18 +58,13 @@ use criterion::{criterion_group, criterion_main, Criterion};
 
 pub fn hzrd_cell(c: &mut Criterion) {
     c.bench_function("back-and-forth", |b| {
-        b.iter(|| back_and_forth(black_box(1_000_000)))
+        b.iter(|| back_and_forth(black_box(1_000)))
     });
 
     c.bench_function("local-writer", |b| {
-        b.iter(|| local_writer(black_box(1_000_000)))
+        b.iter(|| local_writer(black_box(1_000)))
     });
 }
 
-criterion_group! {
-    name = benches;
-    config = Criterion::default().sample_size(20);
-    targets = hzrd_cell
-}
-
+criterion_group!(benches, hzrd_cell);
 criterion_main!(benches);
