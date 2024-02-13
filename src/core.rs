@@ -287,10 +287,11 @@ unsafe impl Sync for HzrdPtr {}
 
 // -------------------------------------
 
+/// Custom trait meant to signify only that the value can be deleted
 trait Delete {}
 impl<T> Delete for T {}
 
-/// A retired pointer that will free the underlying value on drop
+/// A pointer that will free the underlying value on drop
 pub struct RetiredPtr {
     ptr: NonNull<dyn Delete>,
 }
@@ -316,7 +317,7 @@ impl RetiredPtr {
 impl Drop for RetiredPtr {
     fn drop(&mut self) {
         // SAFETY: No reference to this when dropped (and always heap allocated)
-        let _ = unsafe { Box::from_raw(self.ptr.as_ptr()) };
+        let _: Box<dyn Delete> = unsafe { Box::from_raw(self.ptr.as_ptr()) };
     }
 }
 
