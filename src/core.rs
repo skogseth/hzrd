@@ -12,7 +12,6 @@ These are used in the [`Domain`] interface, and can be considered the fundamenta
 
 // -------------------------------------
 
-use std::any::Any;
 use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 use std::rc::Rc;
@@ -288,9 +287,12 @@ unsafe impl Sync for HzrdPtr {}
 
 // -------------------------------------
 
+trait Delete {}
+impl<T> Delete for T {}
+
 /// A retired pointer that will free the underlying value on drop
 pub struct RetiredPtr {
-    ptr: NonNull<dyn Any>,
+    ptr: NonNull<dyn Delete>,
 }
 
 impl RetiredPtr {
