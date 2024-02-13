@@ -290,8 +290,7 @@ unsafe impl Domain for GlobalDomain {
         let hzrd_ptrs = OnceCell::new();
         let hzrd_ptrs = || hzrd_ptrs.get_or_init(|| HzrdPtrs::load(HAZARD_POINTERS.iter()));
 
-        let locally_reclaimed = LOCAL_RETIRED_POINTERS.with(|cell| {
-            let retired_ptrs = unsafe { &mut *cell.0.get() };
+        let try_reclaim = |retired_ptrs: &mut Vec<RetiredPtr>| -> usize {
             let prev_size = retired_ptrs.len();
 
             if prev_size < global_config().bulk_size {
@@ -300,19 +299,15 @@ unsafe impl Domain for GlobalDomain {
 
             retired_ptrs.retain(|p| hzrd_ptrs().contains(p.addr()));
             prev_size - retired_ptrs.len()
+        };
+
+        let locally_reclaimed = LOCAL_RETIRED_POINTERS.with(|cell| {
+            let retired_ptrs = unsafe { &mut *cell.0.get() };
+            try_reclaim(retired_ptrs)
         });
 
         let shared_reclaimed = match SHARED_RETIRED_POINTERS.try_lock() {
-            Ok(mut retired_ptrs) => {
-                let prev_size = retired_ptrs.len();
-
-                if prev_size < global_config().bulk_size {
-                    return 0;
-                }
-
-                retired_ptrs.retain(|p| hzrd_ptrs().contains(p.addr()));
-                prev_size - retired_ptrs.len()
-            }
+            Ok(mut retired_ptrs) => try_reclaim(&mut retired_ptrs),
             Err(_) => 0,
         };
 
@@ -617,7 +612,6 @@ mod tests {
         unsafe { NonNull::new_unchecked(raw) }
     }
 
-    #[ignore]
     #[test]
     fn global_domain() {
         let ptr = new_value(['a', 'b', 'c', 'd']);
