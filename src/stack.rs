@@ -63,6 +63,20 @@ impl<T> SharedStack<T> {
         unsafe { &(*node).val }
     }
 
+    /// Push a new value onto the stack and return a mutable reference to the value
+    pub fn push_mut(&mut self, val: T) -> &mut T {
+        let node = Box::into_raw(Box::new(Node::new(val)));
+
+        let old_top = self.top.load(Acquire);
+        unsafe { &*node }.next.store(old_top, Release);
+
+        // This should always succeed
+        let _exchange_result = self.top.compare_exchange(old_top, node, SeqCst, Relaxed);
+        debug_assert!(_exchange_result.is_ok());
+
+        unsafe { &mut (*node).val }
+    }
+
     /// Create an iterator over the stack
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
@@ -92,6 +106,34 @@ impl<T> Default for SharedStack<T> {
     }
 }
 
+impl<T> FromIterator<T> for SharedStack<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let mut stack = SharedStack::new();
+        for item in iter {
+            stack.push_mut(item);
+        }
+        stack
+    }
+}
+
+impl<T> Extend<T> for SharedStack<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        for item in iter {
+            self.push_mut(item);
+        }
+    }
+}
+
+impl<T> IntoIterator for SharedStack<T> {
+    type Item = T;
+    type IntoIter = IntoIter<T>;
+    fn into_iter(self) -> Self::IntoIter {
+        let next = self.top.load(SeqCst);
+        std::mem::forget(self);
+        IntoIter { next }
+    }
+}
+
 impl<'t, T> IntoIterator for &'t SharedStack<T> {
     type Item = &'t T;
     type IntoIter = Iter<'t, T>;
@@ -108,6 +150,25 @@ impl<T> Drop for SharedStack<T> {
             unsafe { drop(Box::from_raw(current)) };
             current = next;
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct IntoIter<T> {
+    next: *mut Node<T>,
+}
+
+impl<T> Iterator for IntoIter<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.next.is_null() {
+            return None;
+        }
+
+        let current = unsafe { Box::from_raw(self.next) };
+        self.next = current.next.load(SeqCst);
+        Some(current.val)
     }
 }
 
@@ -191,5 +252,12 @@ mod tests {
                 }
             });
         });
+    }
+
+    #[test]
+    fn iterator() {
+        let mut stack = SharedStack::from_iter([String::from("A"), String::from("B")]);
+        stack.extend([String::from("C"), String::from("D")]);
+        assert_eq!(Vec::from_iter(stack), ["D", "C", "B", "A"]);
     }
 }
