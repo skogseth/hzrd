@@ -8,14 +8,9 @@ description = "Shared mutability containers based on hazard pointers"
 repository = "https://github.com/skogseth/hzrd/"
 license = "MIT"
 
-[[bin]]
-name = "back-and-forth"
-path = "benchmarks/back-and-forth.rs"
+[dev-dependencies]
+criterion = "0.5.1"
 
-[[bin]]
-name = "local-writer"
-path = "benchmarks/local-writer.rs"
-
-[[bin]]
-name = "single-threaded"
-path = "benchmarks/single-threaded.rs"
+[[bench]]
+name = "macro"
+harness = false
