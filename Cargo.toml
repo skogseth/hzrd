@@ -9,13 +9,16 @@ repository = "https://github.com/skogseth/hzrd/"
 license = "MIT"
 
 [[bin]]
-name = "back-and-forth"
-path = "benchmarks/back-and-forth.rs"
-
-[[bin]]
 name = "local-writer"
 path = "benchmarks/local-writer.rs"
 
 [[bin]]
 name = "single-threaded"
 path = "benchmarks/single-threaded.rs"
+
+[dev-dependencies]
+criterion = "0.5.1"
+
+[[bench]]
+name = "back-and-forth"
+harness = false
