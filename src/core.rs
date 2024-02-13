@@ -169,14 +169,18 @@ pub unsafe trait Domain {
     fn just_retire(&self, ret_ptr: RetiredPtr);
 
     /// Reclaim all "reclaimable" memory in the given domain
-    fn reclaim(&self);
+    ///
+    /// The method must return the number of reclaimed objects
+    fn reclaim(&self) -> usize;
 
     // -------------------------------------
 
     /// Retire the provided retired-pointer and reclaim all "reclaimable" memory
-    fn retire(&self, ret_ptr: RetiredPtr) {
+    ///
+    /// The method must return the number of reclaimed objects
+    fn retire(&self, ret_ptr: RetiredPtr) -> usize {
         self.just_retire(ret_ptr);
-        self.reclaim();
+        self.reclaim()
     }
 }
 
@@ -192,8 +196,8 @@ macro_rules! deref_impl {
                 (**self).just_retire(ret_ptr);
             }
 
-            fn reclaim(&self) {
-                (**self).reclaim();
+            fn reclaim(&self) -> usize {
+                (**self).reclaim()
             }
         }
     };

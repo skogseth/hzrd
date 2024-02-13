@@ -11,7 +11,7 @@ The default domain used by [`HzrdCell`](`crate::HzrdCell`) is [`GlobalDomain`], 
 
 // -------------------------------------
 
-use std::cell::{Cell, UnsafeCell};
+use std::cell::{Cell, OnceCell, UnsafeCell};
 use std::collections::{BTreeSet, LinkedList};
 use std::sync::{Mutex, OnceLock};
 
@@ -54,7 +54,7 @@ Config options for domains in this module
 
 If you want to change the global config options then this can be done via [`GLOBAL_CONFIG`]
 */
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Config {
     caching: bool,
 }
@@ -62,13 +62,7 @@ pub struct Config {
 impl Config {
     /// Enable/disable caching (disabled by default)
     pub fn caching(self, caching: bool) -> Self {
-        Self { caching, ..self }
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self { caching: false }
+        Self { caching }
     }
 }
 
@@ -248,17 +242,36 @@ unsafe impl Domain for GlobalDomain {
         })
     }
 
-    fn reclaim(&self) {
-        let hzrd_ptrs = HzrdPtrs::load(HAZARD_POINTERS.iter());
+    fn reclaim(&self) -> usize {
+        // Lazily load hazard pointers (waiting for `LazyCell` to stabilize...)
+        let hzrd_ptrs = OnceCell::new();
+        let hzrd_ptrs = || hzrd_ptrs.get_or_init(|| HzrdPtrs::load(HAZARD_POINTERS.iter()));
 
-        LOCAL_RETIRED_POINTERS.with(|cell| {
+        let locally_reclaimed = LOCAL_RETIRED_POINTERS.with(|cell| {
             let retired_ptrs = unsafe { &mut *cell.0.get() };
-            retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
+            let prev_size = retired_ptrs.len();
+            if prev_size > 0 {
+                retired_ptrs.retain(|p| hzrd_ptrs().contains(p.addr()));
+                prev_size - retired_ptrs.len()
+            } else {
+                0
+            }
         });
 
-        if let Ok(mut retired_ptrs) = SHARED_RETIRED_POINTERS.try_lock() {
-            retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
-        }
+        let shared_reclaimed = match SHARED_RETIRED_POINTERS.try_lock() {
+            Ok(mut retired_ptrs) => {
+                let prev_size = retired_ptrs.len();
+                if prev_size > 0 {
+                    retired_ptrs.retain(|p| hzrd_ptrs().contains(p.addr()));
+                    prev_size - retired_ptrs.len()
+                } else {
+                    0
+                }
+            }
+            Err(_) => 0,
+        };
+
+        locally_reclaimed + shared_reclaimed
     }
 }
 
@@ -363,38 +376,44 @@ unsafe impl Domain for SharedDomain {
         self.retired_ptrs.lock().unwrap().push(ret_ptr);
     }
 
-    fn reclaim(&self) {
+    fn reclaim(&self) -> usize {
         // Try to aquire lock, exit if it is taken
         let Ok(mut retired_ptrs) = self.retired_ptrs.try_lock() else {
-            return;
+            return 0;
         };
 
+        let prev_size = retired_ptrs.len();
+
         // Check if it's empty, no need to move forward otherwise
-        if retired_ptrs.is_empty() {
-            return;
+        if prev_size == 0 {
+            return 0;
         }
 
         let hzrd_ptrs = HzrdPtrs::load(self.hzrd_ptrs.iter());
         retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
+        prev_size - retired_ptrs.len()
     }
 
     // -------------------------------------
 
     // Override this for (hopefully) improved performance
-    fn retire(&self, ret_ptr: RetiredPtr) {
+    fn retire(&self, ret_ptr: RetiredPtr) -> usize {
         // Grab the lock to retired pointers
         let mut retired_ptrs = self.retired_ptrs.lock().unwrap();
 
         // And retire the given pointer
         retired_ptrs.push(ret_ptr);
 
+        let prev_size = retired_ptrs.len();
+
         // Check if it's empty, no need to move forward otherwise
-        if retired_ptrs.is_empty() {
-            return;
+        if prev_size == 0 {
+            return 0;
         }
 
         let hzrd_ptrs = HzrdPtrs::load(self.hzrd_ptrs.iter());
         retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
+        prev_size - retired_ptrs.len()
     }
 }
 
@@ -522,12 +541,20 @@ unsafe impl Domain for LocalDomain {
         retired_ptrs.push(ret_ptr);
     }
 
-    fn reclaim(&self) {
+    fn reclaim(&self) -> usize {
         let retired_ptrs = unsafe { &mut *self.retired_ptrs.get() };
         let hzrd_ptrs = unsafe { &mut *self.hzrd_ptrs.get() };
 
+        let prev_size = retired_ptrs.len();
+
+        // Check if it's empty, no need to move forward otherwise
+        if prev_size == 0 {
+            return 0;
+        }
+
         let hzrd_ptrs = HzrdPtrs::load(hzrd_ptrs.iter().map(SharedCell::get));
         retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
+        prev_size - retired_ptrs.len()
     }
 }
 
@@ -557,16 +584,29 @@ mod tests {
         let hzrd_ptrs = HzrdPtrs::load(HAZARD_POINTERS.iter());
         assert!(hzrd_ptrs.contains(ptr.as_ptr() as usize));
 
-        domain.retire(unsafe { RetiredPtr::new(ptr) });
-        assert_eq!(domain.number_of_retired_ptrs(), 1);
+        // Retire the pointer. Nothing should be reclaimed this time
+        {
+            let reclaimed = domain.retire(unsafe { RetiredPtr::new(ptr) });
+            assert_eq!(reclaimed, 0);
+            assert_eq!(domain.number_of_retired_ptrs(), 1);
+        }
 
-        domain.reclaim();
-        assert_eq!(domain.number_of_retired_ptrs(), 1);
+        // Nothing has changed with the hazard pointer, nothing will be reclaimed
+        {
+            let reclaimed = domain.reclaim();
+            assert_eq!(reclaimed, 0);
+            assert_eq!(domain.number_of_retired_ptrs(), 1);
+        }
 
+        // We now reset the hazard pointer and try again
         unsafe { hzrd_ptr.reset() };
 
-        domain.reclaim();
-        assert_eq!(domain.number_of_retired_ptrs(), 0);
+        // This time there should be one reclaimed object, zero left
+        {
+            let reclaimed = domain.reclaim();
+            assert_eq!(reclaimed, 1);
+            assert_eq!(domain.number_of_retired_ptrs(), 0);
+        }
     }
 
     #[test]
@@ -581,16 +621,29 @@ mod tests {
         let hzrd_ptrs = HzrdPtrs::load(domain.hzrd_ptrs.iter());
         assert!(hzrd_ptrs.contains(ptr.as_ptr() as usize));
 
-        domain.retire(unsafe { RetiredPtr::new(ptr) });
-        assert_eq!(domain.number_of_retired_ptrs(), 1);
+        // Retire the pointer. Nothing should be reclaimed this time
+        {
+            let reclaimed = domain.retire(unsafe { RetiredPtr::new(ptr) });
+            assert_eq!(reclaimed, 0);
+            assert_eq!(domain.number_of_retired_ptrs(), 1);
+        }
 
-        domain.reclaim();
-        assert_eq!(domain.number_of_retired_ptrs(), 1);
+        // Nothing has changed with the hazard pointer, nothing will be reclaimed
+        {
+            let reclaimed = domain.reclaim();
+            assert_eq!(reclaimed, 0);
+            assert_eq!(domain.number_of_retired_ptrs(), 1);
+        }
 
+        // We now reset the hazard pointer and try again
         unsafe { hzrd_ptr.reset() };
 
-        domain.reclaim();
-        assert_eq!(domain.number_of_retired_ptrs(), 0);
+        // This time there should be one reclaimed object, zero left
+        {
+            let reclaimed = domain.reclaim();
+            assert_eq!(reclaimed, 1);
+            assert_eq!(domain.number_of_retired_ptrs(), 0);
+        }
     }
 
     #[test]
@@ -606,15 +659,28 @@ mod tests {
         let hzrd_ptrs = HzrdPtrs::load(hzrd_ptrs.iter().map(SharedCell::get));
         assert!(hzrd_ptrs.contains(ptr.as_ptr() as usize));
 
-        domain.retire(unsafe { RetiredPtr::new(ptr) });
-        assert_eq!(domain.number_of_retired_ptrs(), 1);
+        // Retire the pointer. Nothing should be reclaimed this time
+        {
+            let reclaimed = domain.retire(unsafe { RetiredPtr::new(ptr) });
+            assert_eq!(reclaimed, 0);
+            assert_eq!(domain.number_of_retired_ptrs(), 1);
+        }
 
-        domain.reclaim();
-        assert_eq!(domain.number_of_retired_ptrs(), 1);
+        // Nothing has changed with the hazard pointer, nothing will be reclaimed
+        {
+            let reclaimed = domain.reclaim();
+            assert_eq!(reclaimed, 0);
+            assert_eq!(domain.number_of_retired_ptrs(), 1);
+        }
 
+        // We now reset the hazard pointer and try again
         unsafe { hzrd_ptr.reset() };
 
-        domain.reclaim();
-        assert_eq!(domain.number_of_retired_ptrs(), 0);
+        // This time there should be one reclaimed object, zero left
+        {
+            let reclaimed = domain.reclaim();
+            assert_eq!(reclaimed, 1);
+            assert_eq!(domain.number_of_retired_ptrs(), 0);
+        }
     }
 }
