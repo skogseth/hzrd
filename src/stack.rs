@@ -63,7 +63,7 @@ impl<T> SharedStack<T> {
         unsafe { &(*node).val }
     }
 
-    /// Create an iterator over the stack
+    /// Push a new value onto the stack and return a mutable reference to the value
     pub fn push_mut(&mut self, val: T) -> &mut T {
         let node = Box::into_raw(Box::new(Node::new(val)));
 
@@ -77,6 +77,7 @@ impl<T> SharedStack<T> {
         unsafe { &mut (*node).val }
     }
 
+    /// Create an iterator over the stack
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
             next: AtomicPtr::new(self.top.load(SeqCst)),
