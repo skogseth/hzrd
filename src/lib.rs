@@ -449,27 +449,33 @@ mod tests {
     }
 
     #[test]
-    fn multi_threaded() {
+    fn multithreaded() {
         let string = String::new();
         let cell = HzrdCell::new(string);
 
         std::thread::scope(|s| {
-            s.spawn(|| {
-                let handle = cell.read();
-                std::thread::sleep(Duration::from_millis(200));
-                assert_eq!(*handle, "");
-            });
+            std::thread::Builder::new()
+                .name(String::from("Reader thread"))
+                .spawn_scoped(s, || {
+                    let handle = cell.read();
+                    std::thread::sleep(Duration::from_millis(200));
+                    assert_eq!(*handle, "");
+                })
+                .unwrap();
 
             std::thread::sleep(Duration::from_millis(100));
 
-            s.spawn(|| {
-                let handle = cell.read();
-                assert_eq!(*handle, "");
-                drop(handle);
+            std::thread::Builder::new()
+                .name(String::from("Writer thread"))
+                .spawn_scoped(s, || {
+                    let handle = cell.read();
+                    assert_eq!(*handle, "");
+                    drop(handle);
 
-                let new_string = String::from("Hello world!");
-                cell.set(new_string);
-            });
+                    let new_string = String::from("Hello world!");
+                    cell.just_set(new_string);
+                })
+                .unwrap();
         });
 
         cell.reclaim();

@@ -12,7 +12,7 @@ The default domain used by [`HzrdCell`](`crate::HzrdCell`) is [`GlobalDomain`], 
 // -------------------------------------
 
 use std::cell::{Cell, OnceCell, UnsafeCell};
-use std::collections::{BTreeSet, LinkedList};
+use std::collections::LinkedList;
 use std::sync::{Mutex, OnceLock};
 
 use crate::core::{Domain, HzrdPtr, RetiredPtr};
@@ -164,7 +164,7 @@ impl Drop for HzrdPtrs {
 
 static HAZARD_POINTERS: SharedStack<HzrdPtr> = SharedStack::new();
 
-static SHARED_RETIRED_POINTERS: Mutex<Vec<RetiredPtr>> = Mutex::new(Vec::new());
+static SHARED_RETIRED_POINTERS: SharedStack<RetiredPtr> = SharedStack::new();
 
 thread_local! {
     static LOCAL_RETIRED_POINTERS: LocalRetiredPtrs = const { LocalRetiredPtrs(UnsafeCell::new(Vec::new())) };
@@ -180,17 +180,16 @@ This should, in our case, only lead to memory leaks, which is okay because it se
 */
 impl Drop for LocalRetiredPtrs {
     fn drop(&mut self) {
-        // We can actually use `get_mut` in here, nice!
-        let local_retired_ptrs = self.0.get_mut();
+        // We can actually use `get_mut` here, nice!
+        let mut local_retired_ptrs = std::mem::take(self.0.get_mut());
 
         // Clean up any garbage that can be cleaned up
-        let hzrd_ptrs: BTreeSet<_> = HAZARD_POINTERS.iter().map(HzrdPtr::get).collect();
+        let hzrd_ptrs: Vec<_> = HAZARD_POINTERS.iter().map(HzrdPtr::get).collect();
         local_retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
 
         // If there's still garbage we send it to the shared pool
-        if !local_retired_ptrs.is_empty() {
-            let mut shared_retired_ptrs = SHARED_RETIRED_POINTERS.lock().unwrap();
-            shared_retired_ptrs.extend(local_retired_ptrs.drain(..));
+        for p in local_retired_ptrs {
+            SHARED_RETIRED_POINTERS.only_push(p);
         }
     }
 }
@@ -282,7 +281,8 @@ unsafe impl Domain for GlobalDomain {
         let hzrd_ptrs = OnceCell::new();
         let hzrd_ptrs = || hzrd_ptrs.get_or_init(|| HzrdPtrs::load(HAZARD_POINTERS.iter()));
 
-        let try_reclaim = |retired_ptrs: &mut Vec<RetiredPtr>| -> usize {
+        let locally_reclaimed = LOCAL_RETIRED_POINTERS.with(|cell| {
+            let retired_ptrs = unsafe { &mut *cell.0.get() };
             let prev_size = retired_ptrs.len();
 
             // Check if it's too small to reclaim
@@ -292,17 +292,17 @@ unsafe impl Domain for GlobalDomain {
 
             retired_ptrs.retain(|p| hzrd_ptrs().contains(p.addr()));
             prev_size - retired_ptrs.len()
-        };
-
-        let locally_reclaimed = LOCAL_RETIRED_POINTERS.with(|cell| {
-            let retired_ptrs = unsafe { &mut *cell.0.get() };
-            try_reclaim(retired_ptrs)
         });
 
-        let shared_reclaimed = match SHARED_RETIRED_POINTERS.try_lock() {
-            Ok(mut retired_ptrs) => try_reclaim(&mut retired_ptrs),
-            Err(_) => 0,
-        };
+        let shared_retired_ptrs = unsafe { SHARED_RETIRED_POINTERS.take() };
+        let mut shared_reclaimed = 0;
+        for p in shared_retired_ptrs {
+            if hzrd_ptrs().contains(p.addr()) {
+                SHARED_RETIRED_POINTERS.only_push(p);
+            } else {
+                shared_reclaimed += 1;
+            }
+        }
 
         locally_reclaimed + shared_reclaimed
     }

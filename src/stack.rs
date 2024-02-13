@@ -63,6 +63,31 @@ impl<T> SharedStack<T> {
         unsafe { &(*node).val }
     }
 
+    /// Push a new value onto the stack
+    pub fn only_push(&self, val: T) {
+        let node = Box::into_raw(Box::new(Node::new(val)));
+
+        let mut old_top = self.top.load(Acquire);
+        loop {
+            // SAFETY: We know that this pointer is valid, we just made it
+            unsafe { &*node }.next.store(old_top, Release);
+
+            // We want to exchange the top with our new node, but only if the top is unchanged
+            match self.top.compare_exchange(old_top, node, SeqCst, Acquire) {
+                // The exchange was successful, the node has been pushed!
+                // We can now update the count of the list and exit the loop
+                Ok(_) => {
+                    // The `Release` ordering here makes the load part of the
+                    // operation `Relaxed`, but we don't care about that.
+                    self.count.fetch_add(1, Release);
+                    break;
+                }
+                // The value has changed, we update `old_top` to reflect this
+                Err(current_top) => old_top = current_top,
+            }
+        }
+    }
+
     /// Push a new value onto the stack and return a mutable reference to the value
     pub fn push_mut(&mut self, val: T) -> &mut T {
         let node = Box::into_raw(Box::new(Node::new(val)));
@@ -83,6 +108,12 @@ impl<T> SharedStack<T> {
             next: AtomicPtr::new(self.top.load(SeqCst)),
             _marker: PhantomData,
         }
+    }
+
+    /// # Safety
+    /// The user must ensure that no-one is reading the list at the moment
+    pub unsafe fn take(&self) -> Self {
+        todo!()
     }
 
     #[cfg(test)]
