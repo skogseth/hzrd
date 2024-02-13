@@ -20,19 +20,6 @@ use crate::stack::SharedStack;
 
 // -------------------------------------
 
-/*
-# Todo:
-- Add options for caching:
-  -> Maximum size of cache?
-  -> Fixed size for cache?
-  -> Pre-allocated cache?
-- Add option for bulk-reclaim (default to what?), use const generics?
-- Test HashSet for cache (BTreeSet can't reuse allocation?)
-
-*/
-
-// -------------------------------------
-
 /**
 This variable can be used to configure the behavior of the domains provided by this crate
 
@@ -58,6 +45,11 @@ If you want to change the global config options then this can be done via [`GLOB
 pub struct Config {
     caching: bool,
     bulk_size: usize,
+    /*
+    Other possible config options:
+      - Maximum/fixed size cache
+      - Pre-allocate cache?
+    */
 }
 
 impl Config {
@@ -293,6 +285,7 @@ unsafe impl Domain for GlobalDomain {
         let try_reclaim = |retired_ptrs: &mut Vec<RetiredPtr>| -> usize {
             let prev_size = retired_ptrs.len();
 
+            // Check if it's too small to reclaim
             if prev_size < global_config().bulk_size {
                 return 0;
             }
@@ -424,7 +417,7 @@ unsafe impl Domain for SharedDomain {
 
         let prev_size = retired_ptrs.len();
 
-        // Check if it's too small
+        // Check if it's too small to reclaim
         if prev_size < global_config().bulk_size {
             return 0;
         }
@@ -446,7 +439,7 @@ unsafe impl Domain for SharedDomain {
 
         let prev_size = retired_ptrs.len();
 
-        // Check if it's too small
+        // Check if it's too small to reclaim
         if prev_size < global_config().bulk_size {
             return 0;
         }
@@ -587,7 +580,7 @@ unsafe impl Domain for LocalDomain {
 
         let prev_size = retired_ptrs.len();
 
-        // Check if it's too small
+        // Check if it's too small to reclaim
         if prev_size < global_config().bulk_size {
             return 0;
         }
