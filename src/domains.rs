@@ -367,6 +367,12 @@ pub struct SharedDomain {
     retired_ptrs: Mutex<Vec<RetiredPtr>>,
 }
 
+impl Default for SharedDomain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SharedDomain {
     /**
     Construct a new, clean shared domain
@@ -524,6 +530,12 @@ pub struct LocalDomain {
     // Important to only allow shared references to the HzrdPtr's
     hzrd_ptrs: UnsafeCell<LinkedList<SharedCell<HzrdPtr>>>,
     retired_ptrs: UnsafeCell<Vec<RetiredPtr>>,
+}
+
+impl Default for LocalDomain {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LocalDomain {
