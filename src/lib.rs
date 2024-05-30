@@ -77,12 +77,12 @@ Each [`HzrdCell`] belongs to a given domain, which contains the set of hazard po
 See the [crate-level documentation](crate) for a "getting started" guide.
 */
 #[derive(Debug)]
-pub struct HzrdCell<T, D> {
+pub struct HzrdCell<T, D = GlobalDomain> {
     value: AtomicPtr<T>,
     domain: D,
 }
 
-impl<T: 'static> HzrdCell<T, GlobalDomain> {
+impl<T: 'static> HzrdCell<T> {
     /**
     Construct a new [`HzrdCell`] with the given value in the default domain.
 
@@ -423,6 +423,24 @@ mod tests {
 
         // Deep drop
         let _ = HzrdCell::new(vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn types() {
+        let _cell_1: HzrdCell<usize> = HzrdCell::new(0);
+        let _cell_2: HzrdCell<_, LocalDomain> = HzrdCell::new_in(0, LocalDomain::new());
+
+        let shared_domain = Arc::new(SharedDomain::new());
+        let _cell_3: HzrdCell<_, Arc<_>> = HzrdCell::new_in(0, Arc::clone(&shared_domain));
+        let _cell_4: HzrdCell<_, &Arc<SharedDomain>> = HzrdCell::new_in(0, &shared_domain);
+
+        let _cell_4: HzrdCell<_, _> = HzrdCell::new_in(0, Box::new(SharedDomain::new()));
+
+        let _cell_5: HzrdCell<usize, _> = HzrdCell::new_in(0, LocalDomain::new());
+        let _cell_6: HzrdCell<usize, LocalDomain> = HzrdCell::new_in(0, LocalDomain::new());
+
+        // Invalid:
+        // let _cell_x: HzrdCell<_> = HzrdCell::new_in(false, Box::new(SharedDomain::new()));
     }
 
     #[test]
