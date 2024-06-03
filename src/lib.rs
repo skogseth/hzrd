@@ -401,6 +401,13 @@ impl<T> HzrdReader<'_, T> {
     }
 }
 
+impl<T> Drop for HzrdReader<'_, T> {
+    fn drop(&mut self) {
+        // SAFETY: We are the current owner of the hazard pointer
+        unsafe { self.hzrd_ptr.release() };
+    }
+}
+
 // SAFETY: The type held needs to be both `Send` and `Sync`
 unsafe impl<T: Send + Sync> Send for HzrdReader<'_, T> {}
 
@@ -613,5 +620,33 @@ mod tests {
                 s.spawn(|| cell.set(string));
             }
         });
+    }
+
+    #[test]
+    fn hazard_pointers_are_reused() {
+        let local_domain = LocalDomain::new();
+        let cell = HzrdCell::new_in(0, &local_domain);
+
+        assert_eq!(local_domain.number_of_hzrd_ptrs(), 0);
+
+        assert_eq!(cell.get(), 0);
+        assert_eq!(local_domain.number_of_hzrd_ptrs(), 1);
+
+        // Should just reuse the same hazard pointer each read
+        for _ in 0..10 {
+            assert_eq!(cell.get(), 0);
+        }
+        assert_eq!(local_domain.number_of_hzrd_ptrs(), 1);
+
+        // We should still only be using this one hazard pointer
+        let reader = cell.reader();
+        assert_eq!(local_domain.number_of_hzrd_ptrs(), 1);
+        drop(reader);
+
+        // Should just reuse the same hazard pointer for each reader
+        for _ in 0..10 {
+            let _ = cell.reader();
+        }
+        assert_eq!(local_domain.number_of_hzrd_ptrs(), 1);
     }
 }
