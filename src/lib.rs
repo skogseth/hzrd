@@ -401,6 +401,13 @@ impl<T> HzrdReader<'_, T> {
     }
 }
 
+impl<T> Drop for HzrdReader<'_, T> {
+    fn drop(&mut self) {
+        // SAFETY: We are the current owner of the hazard pointer
+        unsafe { self.hzrd_ptr.release() };
+    }
+}
+
 // SAFETY: The type held needs to be both `Send` and `Sync`
 unsafe impl<T: Send + Sync> Send for HzrdReader<'_, T> {}
 
