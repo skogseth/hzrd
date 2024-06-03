@@ -630,5 +630,16 @@ mod tests {
             assert_eq!(cell.get(), 0);
         }
         assert_eq!(local_domain.number_of_hzrd_ptrs(), 1);
+
+        // We should still only be using this one hazard pointer
+        let reader = cell.reader();
+        assert_eq!(local_domain.number_of_hzrd_ptrs(), 1);
+        drop(reader);
+
+        // Should just reuse the same hazard pointer for each reader
+        for _ in 0..10 {
+            let _ = cell.reader();
+        }
+        assert_eq!(local_domain.number_of_hzrd_ptrs(), 1);
     }
 }
