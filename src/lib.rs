@@ -614,4 +614,21 @@ mod tests {
             }
         });
     }
+
+    #[test]
+    fn hazard_pointers_are_reused() {
+        let local_domain = LocalDomain::new();
+        let cell = HzrdCell::new_in(0, &local_domain);
+
+        assert_eq!(local_domain.number_of_hzrd_ptrs(), 0);
+
+        assert_eq!(cell.get(), 0);
+        assert_eq!(local_domain.number_of_hzrd_ptrs(), 1);
+
+        // Should just reuse the same hazard pointer each read
+        for _ in 0..10 {
+            assert_eq!(cell.get(), 0);
+        }
+        assert_eq!(local_domain.number_of_hzrd_ptrs(), 1);
+    }
 }
