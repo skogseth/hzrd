@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
+
+use crate::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
 
 #[derive(Debug)]
 pub struct Node<T> {
@@ -9,7 +10,14 @@ pub struct Node<T> {
 }
 
 impl<T> Node<T> {
+    #[cfg(not(loom))]
     pub const fn new(val: T) -> Self {
+        let null = AtomicPtr::new(std::ptr::null_mut());
+        Self { val, next: null }
+    }
+
+    #[cfg(loom)]
+    pub fn new(val: T) -> Self {
         let null = AtomicPtr::new(std::ptr::null_mut());
         Self { val, next: null }
     }
@@ -22,7 +30,16 @@ pub struct SharedStack<T> {
 
 impl<T> SharedStack<T> {
     /// Create a new, empty stack
+    #[cfg(not(loom))]
     pub const fn new() -> Self {
+        Self {
+            top: AtomicPtr::new(std::ptr::null_mut()),
+            count: AtomicUsize::new(0),
+        }
+    }
+
+    #[cfg(loom)]
+    pub fn new() -> Self {
         Self {
             top: AtomicPtr::new(std::ptr::null_mut()),
             count: AtomicUsize::new(0),

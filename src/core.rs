@@ -15,9 +15,9 @@ These are used in the [`Domain`] interface, and can be considered the fundamenta
 use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 use std::rc::Rc;
-use std::sync::atomic::Ordering::*;
-use std::sync::atomic::{AtomicPtr, AtomicUsize};
-use std::sync::Arc;
+
+use crate::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
+use crate::sync::Arc;
 
 // ------------------------------
 

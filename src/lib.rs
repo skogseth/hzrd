@@ -46,12 +46,21 @@ assert_eq!(state.get(), State::Finished);
 ```
 */
 
+#[cfg(not(loom))]
+pub(crate) use std::sync;
+
+#[cfg(loom)]
+pub(crate) use loom::sync;
+
 mod stack;
 
 pub mod core;
 pub mod domains;
 
-pub use crate::domains::{GlobalDomain, LocalDomain, SharedDomain};
+pub use crate::domains::{LocalDomain, SharedDomain};
+
+#[cfg(not(loom))]
+pub use crate::domains::GlobalDomain;
 
 mod private {
     // We want to test the code in the readme
@@ -63,9 +72,10 @@ mod private {
 // ------------------------------------------
 
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicPtr, Ordering::*};
+use std::sync::atomic::Ordering::*;
 
 use crate::core::{Action, Domain, HzrdPtr, ReadHandle, RetiredPtr};
+use crate::sync::atomic::AtomicPtr;
 
 // -------------------------------------
 
@@ -76,12 +86,21 @@ Each [`HzrdCell`] belongs to a given domain, which contains the set of hazard po
 
 See the [crate-level documentation](crate) for a "getting started" guide.
 */
+#[cfg(not(loom))]
 #[derive(Debug)]
 pub struct HzrdCell<T, D = GlobalDomain> {
     value: AtomicPtr<T>,
     domain: D,
 }
 
+#[cfg(loom)]
+#[derive(Debug)]
+pub struct HzrdCell<T, D> {
+    value: AtomicPtr<T>,
+    domain: D,
+}
+
+#[cfg(not(loom))]
 impl<T: 'static> HzrdCell<T> {
     /**
     Construct a new [`HzrdCell`] with the given value in the default domain.

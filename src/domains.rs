@@ -13,10 +13,10 @@ The default domain used by [`HzrdCell`](`crate::HzrdCell`) is [`GlobalDomain`], 
 
 use std::cell::{Cell, UnsafeCell};
 use std::collections::LinkedList;
-use std::sync::{Mutex, OnceLock};
 
 use crate::core::{Domain, HzrdPtr, RetiredPtr};
 use crate::stack::SharedStack;
+use crate::sync::Mutex;
 
 // -------------------------------------
 
@@ -30,10 +30,21 @@ let config = Config::default().caching(true);
 GLOBAL_CONFIG.set(config).unwrap();
 ```
 */
-pub static GLOBAL_CONFIG: OnceLock<Config> = OnceLock::new();
+#[cfg(not(loom))]
+pub static GLOBAL_CONFIG: std::sync::OnceLock<Config> = std::sync::OnceLock::new();
 
 fn global_config() -> &'static Config {
-    GLOBAL_CONFIG.get_or_init(Config::default)
+    #[cfg(not(loom))]
+    return GLOBAL_CONFIG.get_or_init(Config::default);
+
+    #[cfg(loom)]
+    {
+        const GLOBAL_CONFIG: Config = Config {
+            caching: false,
+            bulk_size: 1,
+        };
+        return &GLOBAL_CONFIG;
+    }
 }
 
 /**
@@ -162,7 +173,21 @@ impl Drop for HzrdPtrs {
 
 // -------------------------------------
 
-static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
+fn global_domain() -> &'static SharedDomain {
+    #[cfg(not(loom))]
+    {
+        static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
+        return &GLOBAL_DOMAIN;
+    }
+
+    #[cfg(loom)]
+    {
+        loom::lazy_static! {
+            static ref GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
+        }
+        return &*GLOBAL_DOMAIN;
+    }
+}
 
 /**
 A globally shared, multithreaded domain
@@ -212,38 +237,38 @@ pub struct GlobalDomain;
 impl GlobalDomain {
     #[cfg(test)]
     pub(crate) fn number_of_hzrd_ptrs(&self) -> usize {
-        GLOBAL_DOMAIN.number_of_hzrd_ptrs()
+        global_domain().number_of_hzrd_ptrs()
     }
 
     #[cfg(test)]
     pub(crate) fn number_of_retired_ptrs(&self) -> usize {
-        GLOBAL_DOMAIN.number_of_retired_ptrs()
+        global_domain().number_of_retired_ptrs()
     }
 }
 
 unsafe impl Domain for GlobalDomain {
     fn hzrd_ptr(&self) -> &HzrdPtr {
-        GLOBAL_DOMAIN.hzrd_ptr()
+        global_domain().hzrd_ptr()
     }
 
     fn just_retire(&self, ret_ptr: RetiredPtr) {
-        GLOBAL_DOMAIN.just_retire(ret_ptr)
+        global_domain().just_retire(ret_ptr)
     }
 
     fn reclaim(&self) -> usize {
-        GLOBAL_DOMAIN.reclaim()
+        global_domain().reclaim()
     }
 
     // -------------------------------------
 
     fn retire(&self, ret_ptr: RetiredPtr) -> usize {
-        GLOBAL_DOMAIN.retire(ret_ptr)
+        global_domain().retire(ret_ptr)
     }
 }
 
 impl std::fmt::Debug for GlobalDomain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        GLOBAL_DOMAIN.fmt(f)
+        global_domain().fmt(f)
     }
 }
 
@@ -312,7 +337,16 @@ impl SharedDomain {
     let domain = SharedDomain::new();
     ```
     */
+    #[cfg(not(loom))]
     pub const fn new() -> Self {
+        Self {
+            hzrd_ptrs: SharedStack::new(),
+            retired_ptrs: Mutex::new(Vec::new()),
+        }
+    }
+
+    #[cfg(loom)]
+    pub fn new() -> Self {
         Self {
             hzrd_ptrs: SharedStack::new(),
             retired_ptrs: Mutex::new(Vec::new()),
@@ -555,7 +589,7 @@ mod tests {
         assert_eq!(domain.number_of_hzrd_ptrs(), 1);
 
         unsafe { hzrd_ptr.protect(ptr.as_ptr()) };
-        let hzrd_ptrs = HzrdPtrs::load(GLOBAL_DOMAIN.hzrd_ptrs.iter());
+        let hzrd_ptrs = HzrdPtrs::load(super::global_domain().hzrd_ptrs.iter());
         assert!(hzrd_ptrs.contains(ptr.as_ptr() as usize));
 
         // Retire the pointer. Nothing should be reclaimed this time
