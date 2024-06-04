@@ -6,73 +6,8 @@ use loom::sync::Arc;
 use hzrd::core::{Action, HzrdPtr, ReadHandle};
 use hzrd::{HzrdCell, SharedDomain};
 
-/*
 #[test]
 fn core_primitives() {
-    loom::model(|| {
-        let original = Box::into_raw(Box::new(0));
-
-        let value = Box::leak(Box::new(AtomicPtr::new(original)));
-        let hzrd_ptr = Box::leak(Box::new(HzrdPtr::new()));
-
-        let handle_1 = loom::thread::spawn(|| {
-            let handle = unsafe { ReadHandle::read_unchecked(value, hzrd_ptr, Action::Release) };
-            assert!(matches!(*handle, 0 | 1));
-        });
-
-        let handle_2 = loom::thread::spawn(|| {
-            let new = Box::into_raw(Box::new(1));
-            value.swap(new, SeqCst)
-        });
-
-        handle_1.join().unwrap();
-
-        let original = handle_2.join().unwrap();
-
-        // SAFETY: Hazard pointer must be freed at this point
-        assert_eq!(hzrd_ptr.get(), 0);
-        let _ = unsafe { Box::from_raw(original) };
-    });
-}
-*/
-
-#[test]
-fn core_primitives_0() {
-    loom::model(|| {
-        let original = Box::into_raw(Box::new(0));
-
-        let value = AtomicPtr::new(original);
-        let hzrd_ptr = HzrdPtr::new();
-
-        let handle = unsafe { ReadHandle::read_unchecked(&value, &hzrd_ptr, Action::Release) };
-        //assert_eq!(*handle, 0);
-    });
-}
-
-#[test]
-fn core_primitives_1() {
-    loom::model(|| {
-        let original = Box::into_raw(Box::new(0));
-
-        let value = Arc::new(AtomicPtr::new(original));
-        let hzrd_ptr = Arc::new(HzrdPtr::new());
-
-        let handle = loom::thread::spawn({
-            let value = Arc::clone(&value);
-            let hzrd_ptr = Arc::clone(&hzrd_ptr);
-            move || {
-                let handle =
-                    unsafe { ReadHandle::read_unchecked(&*value, &*hzrd_ptr, Action::Release) };
-                assert_eq!(*handle, 0);
-            }
-        });
-
-        handle.join().unwrap();
-    });
-}
-
-#[test]
-fn core_primitives_2() {
     loom::model(|| {
         let original = Box::into_raw(Box::new(0));
 
