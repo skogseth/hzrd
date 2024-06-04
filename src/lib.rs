@@ -72,10 +72,9 @@ mod private {
 // ------------------------------------------
 
 use std::ptr::NonNull;
-use std::sync::atomic::Ordering::*;
 
 use crate::core::{Action, Domain, HzrdPtr, ReadHandle, RetiredPtr};
-use crate::sync::atomic::AtomicPtr;
+use crate::sync::atomic::{AtomicPtr, Ordering::*};
 
 // -------------------------------------
 
