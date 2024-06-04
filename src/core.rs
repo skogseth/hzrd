@@ -16,7 +16,7 @@ use std::ops::Deref;
 use std::ptr::{addr_of, NonNull};
 use std::rc::Rc;
 
-use crate::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
+use crate::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::SeqCst};
 use crate::sync::Arc;
 
 // ------------------------------
@@ -105,17 +105,27 @@ impl<'hzrd, T> ReadHandle<'hzrd, T> {
     ) -> Self {
         let mut ptr = value.load(SeqCst);
         loop {
+            println!("ReadHandle::read_unchecked: Currently processing: {ptr:?}");
+
             // SAFETY: ptr is not null
             unsafe { hzrd_ptr.protect(ptr) };
 
+            println!("ReadHandle::read_unchecked: Hazard pointer is now protecting: {ptr:?}");
+
             // We now need to keep updating it until it is in a consistent state
             let new_ptr = value.load(SeqCst);
+            println!("ReadHandle::read_unchecked: Value is currently: {new_ptr:?}");
+
             if ptr == new_ptr {
+                println!("ReadHandle::read_unchecked: Hazard pointer is successfully protecting: {ptr:?}");
                 break;
             } else {
+                println!("ReadHandle::read_unchecked: Hazard pointer was too slow");
                 ptr = new_ptr;
             }
         }
+
+        assert_eq!(hzrd_ptr.get(), value.load(SeqCst) as usize);
 
         // SAFETY: This pointer is now held valid by the hazard pointer
         let value = unsafe { &*ptr };
@@ -229,7 +239,7 @@ impl HzrdPtr {
 
     /// Try to aquire the hazard pointer
     pub fn try_acquire(&self) -> Option<&Self> {
-        match self.0.compare_exchange(0, dummy_addr(), SeqCst, Relaxed) {
+        match self.0.compare_exchange(0, dummy_addr(), SeqCst, SeqCst) {
             Ok(_) => Some(self),
             Err(_) => None,
         }
@@ -278,7 +288,7 @@ impl Default for HzrdPtr {
 
 impl std::fmt::Debug for HzrdPtr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HzrdPtr({:#x})", self.0.load(Relaxed))
+        write!(f, "HzrdPtr({:#x})", self.0.load(SeqCst))
     }
 }
 
@@ -305,7 +315,10 @@ impl RetiredPtr {
     - The pointer must be held alive until it is safe to drop
     */
     pub unsafe fn new<T: 'static>(ptr: NonNull<T>) -> Self {
-        RetiredPtr { ptr }
+        let addr_before = ptr.as_ptr() as usize;
+        let ret_ptr = RetiredPtr { ptr };
+        assert_eq!(addr_before, ret_ptr.addr());
+        ret_ptr
     }
 
     /// Get the address of the retired pointer

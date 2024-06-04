@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-use crate::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::*};
+use crate::sync::atomic::{AtomicPtr, AtomicUsize, Ordering::SeqCst};
 
 #[derive(Debug)]
 pub struct Node<T> {
@@ -50,26 +50,26 @@ impl<T> SharedStack<T> {
     pub fn count(&self) -> usize {
         // We can use `Relaxed` ordering here since the value
         // will be correctly updated on the previous store
-        self.count.load(Relaxed)
+        self.count.load(SeqCst)
     }
 
     /// Push a new value onto the stack and return a reference to the value
     pub fn push(&self, val: T) -> &T {
         let node = Box::into_raw(Box::new(Node::new(val)));
 
-        let mut old_top = self.top.load(Acquire);
+        let mut old_top = self.top.load(SeqCst);
         loop {
             // SAFETY: We know that this pointer is valid, we just made it
-            unsafe { &*node }.next.store(old_top, Release);
+            unsafe { &*node }.next.store(old_top, SeqCst);
 
             // We want to exchange the top with our new node, but only if the top is unchanged
-            match self.top.compare_exchange(old_top, node, SeqCst, Acquire) {
+            match self.top.compare_exchange(old_top, node, SeqCst, SeqCst) {
                 // The exchange was successful, the node has been pushed!
                 // We can now update the count of the list and exit the loop
                 Ok(_) => {
                     // The `Release` ordering here makes the load part of the
                     // operation `Relaxed`, but we don't care about that.
-                    self.count.fetch_add(1, Release);
+                    self.count.fetch_add(1, SeqCst);
                     break;
                 }
                 // The value has changed, we update `old_top` to reflect this
@@ -84,11 +84,11 @@ impl<T> SharedStack<T> {
     pub fn push_mut(&mut self, val: T) -> &mut T {
         let node = Box::into_raw(Box::new(Node::new(val)));
 
-        let old_top = self.top.load(Acquire);
-        unsafe { &*node }.next.store(old_top, Release);
+        let old_top = self.top.load(SeqCst);
+        unsafe { &*node }.next.store(old_top, SeqCst);
 
         // This should always succeed
-        let _exchange_result = self.top.compare_exchange(old_top, node, SeqCst, Relaxed);
+        let _exchange_result = self.top.compare_exchange(old_top, node, SeqCst, SeqCst);
         debug_assert!(_exchange_result.is_ok());
 
         unsafe { &mut (*node).val }
@@ -163,7 +163,7 @@ impl<T> Drop for SharedStack<T> {
     fn drop(&mut self) {
         let mut current = self.top.load(SeqCst);
         while !current.is_null() {
-            let next = unsafe { (*current).next.load(Acquire) };
+            let next = unsafe { (*current).next.load(SeqCst) };
             unsafe { drop(Box::from_raw(current)) };
             current = next;
         }
@@ -199,13 +199,13 @@ impl<'t, T> Iterator for Iter<'t, T> {
     type Item = &'t T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let next = self.next.load(Acquire);
+        let next = self.next.load(SeqCst);
         if next.is_null() {
             return None;
         }
         let Node { val, next } = unsafe { &*next };
-        let new_next = next.load(Acquire);
-        self.next.store(new_next, Release);
+        let new_next = next.load(SeqCst);
+        self.next.store(new_next, SeqCst);
         Some(val)
     }
 }

@@ -424,6 +424,7 @@ unsafe impl Domain for SharedDomain {
 use shared_cell::SharedCell;
 
 mod shared_cell {
+    #[derive(Debug, Clone)]
     pub(crate) struct SharedCell<T>(T);
 
     impl<T> SharedCell<T> {
@@ -527,6 +528,13 @@ impl LocalDomain {
     pub(crate) fn number_of_retired_ptrs(&self) -> usize {
         unsafe { (*self.retired_ptrs.get()).len() }
     }
+
+    pub fn is_protecting(&self, addr: usize) -> bool {
+        let hzrd_ptrs = unsafe { &*self.hzrd_ptrs.get() };
+        let hzrd_ptrs: Vec<usize> = hzrd_ptrs.iter().map(|e| e.get().get()).collect();
+        println!("Hazard pointers: {hzrd_ptrs:#x?}");
+        hzrd_ptrs.contains(&addr)
+    }
 }
 
 unsafe impl Domain for LocalDomain {
@@ -540,8 +548,14 @@ unsafe impl Domain for LocalDomain {
         }
 
         let hzrd_ptrs = unsafe { &mut *self.hzrd_ptrs.get() };
+
+        println!("Hazard pointers (before pushing): {hzrd_ptrs:?}");
         hzrd_ptrs.push_back(SharedCell::new(HzrdPtr::new()));
-        unsafe { hzrd_ptrs.back().unwrap_unchecked().get() }
+        println!("Hazard pointers (after pushing): {hzrd_ptrs:?}");
+
+        let hzrd_ptr = unsafe { hzrd_ptrs.back().unwrap_unchecked().get() };
+        println!("New hazard pointer: {hzrd_ptr:?}");
+        hzrd_ptr
     }
 
     fn just_retire(&self, ret_ptr: RetiredPtr) {
@@ -560,8 +574,14 @@ unsafe impl Domain for LocalDomain {
             return 0;
         }
 
-        let hzrd_ptrs = HzrdPtrs::load(hzrd_ptrs.iter().map(SharedCell::get));
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
+        crate::sync::atomic::fence(crate::sync::atomic::Ordering::SeqCst);
+
+        println!("LocalDomain::reclaim: Loading hazard pointers");
+        let hzrd_ptrs: Vec<usize> = hzrd_ptrs.iter().map(|e| e.get().get()).collect();
+        println!("LocalDomain::reclaim: Retired pointers (before reclaimed): {retired_ptrs:?}");
+        println!("LocalDomain::reclaim: Hazard pointers (before reclaimed): {hzrd_ptrs:#x?}");
+        retired_ptrs.retain(|p| hzrd_ptrs.contains(&p.addr()));
+        println!("LocalDomain::reclaim: Retired pointers (after reclaimed): {retired_ptrs:?}");
         prev_size - retired_ptrs.len()
     }
 }
