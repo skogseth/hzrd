@@ -13,7 +13,7 @@ The default domain used by [`HzrdCell`](`crate::HzrdCell`) is [`GlobalDomain`], 
 
 use std::cell::{Cell, UnsafeCell};
 use std::collections::LinkedList;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use crate::core::{Domain, HzrdPtr, RetiredPtr};
 use crate::stack::SharedStack;
@@ -293,7 +293,7 @@ let cell_2 = HzrdCell::new_in(false, Arc::clone(&custom_domain));
 #[derive(Debug)]
 pub struct SharedDomain {
     hzrd_ptrs: SharedStack<HzrdPtr>,
-    retired_ptrs: Mutex<Vec<RetiredPtr>>,
+    retired_ptrs: SharedStack<RetiredPtr>,
 }
 
 impl Default for SharedDomain {
@@ -315,18 +315,21 @@ impl SharedDomain {
     pub const fn new() -> Self {
         Self {
             hzrd_ptrs: SharedStack::new(),
-            retired_ptrs: Mutex::new(Vec::new()),
+            retired_ptrs: SharedStack::new(),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn number_of_hzrd_ptrs(&self) -> usize {
-        self.hzrd_ptrs.count()
+        self.hzrd_ptrs.iter().count()
     }
 
     #[cfg(test)]
     pub(crate) fn number_of_retired_ptrs(&self) -> usize {
-        self.retired_ptrs.lock().unwrap().len()
+        let tooketh = unsafe { self.retired_ptrs.take() };
+        let size = tooketh.iter().count();
+        self.retired_ptrs.push_stack(tooketh);
+        size
     }
 }
 
@@ -341,16 +344,12 @@ unsafe impl Domain for SharedDomain {
     }
 
     fn just_retire(&self, ret_ptr: RetiredPtr) {
-        self.retired_ptrs.lock().unwrap().push(ret_ptr);
+        self.retired_ptrs.push(ret_ptr);
     }
 
     fn reclaim(&self) -> usize {
-        // Try to aquire lock, exit if it is taken
-        let Ok(mut retired_ptrs) = self.retired_ptrs.try_lock() else {
-            return 0;
-        };
-
-        let prev_size = retired_ptrs.len();
+        let retired_ptrs = unsafe { self.retired_ptrs.take() };
+        let prev_size = retired_ptrs.iter().count();
 
         // Check if it's too small to reclaim
         if prev_size < global_config().bulk_size {
@@ -358,30 +357,15 @@ unsafe impl Domain for SharedDomain {
         }
 
         let hzrd_ptrs = HzrdPtrs::load(self.hzrd_ptrs.iter());
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
-        prev_size - retired_ptrs.len()
-    }
+        let remaining: SharedStack<RetiredPtr> = retired_ptrs
+            .into_iter()
+            .filter(|retired_ptr| hzrd_ptrs.contains(retired_ptr.addr()))
+            .collect();
 
-    // -------------------------------------
-
-    // Override this for (hopefully) improved performance
-    fn retire(&self, ret_ptr: RetiredPtr) -> usize {
-        // Grab the lock to retired pointers
-        let mut retired_ptrs = self.retired_ptrs.lock().unwrap();
-
-        // And retire the given pointer
-        retired_ptrs.push(ret_ptr);
-
-        let prev_size = retired_ptrs.len();
-
-        // Check if it's too small to reclaim
-        if prev_size < global_config().bulk_size {
-            return 0;
-        }
-
-        let hzrd_ptrs = HzrdPtrs::load(self.hzrd_ptrs.iter());
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
-        prev_size - retired_ptrs.len()
+        let new_size = remaining.iter().count();
+        self.retired_ptrs.push_stack(remaining);
+        assert!(prev_size > new_size);
+        prev_size - new_size
     }
 }
 
