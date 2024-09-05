@@ -27,11 +27,9 @@ impl<T> SharedStack<T> {
         }
     }
 
-    /// Push a new value onto the stack and return a reference to the value
-    pub fn push(&self, val: T) -> &T {
+    fn __push(&self, val: T) -> *mut Node<T> {
         let node = Box::into_raw(Box::new(Node::new(val)));
 
-        // taken from Jon Gjengset
         std::sync::atomic::fence(SeqCst);
 
         let mut old_top = self.top.load(Acquire);
@@ -49,11 +47,22 @@ impl<T> SharedStack<T> {
             }
         }
 
+        node
+    }
+
+    /// Push a new value onto the stack
+    pub fn push(&self, val: T) {
+        let _ = self.__push(val);
+    }
+
+    /// Push a new value onto the stack and return a reference to the value
+    pub fn push_get(&self, val: T) -> &T {
+        let node = self.__push(val);
         unsafe { &(*node).val }
     }
 
     /// Push a new value onto the stack and return a mutable reference to the value
-    pub fn push_mut(&mut self, val: T) -> &mut T {
+    pub fn push_get_mut(&mut self, val: T) -> &mut T {
         let node = Box::into_raw(Box::new(Node::new(val)));
 
         let old_top = self.top.load(Acquire);
@@ -69,11 +78,12 @@ impl<T> SharedStack<T> {
     pub fn push_stack(&self, stack: Self) {
         // TODO: This can be done much more efficiently
         for val in stack {
-            self.push(val);
+            let _ = self.__push(val);
         }
     }
 
     pub unsafe fn take(&self) -> Self {
+        std::sync::atomic::fence(SeqCst);
         let top = self.top.swap(std::ptr::null_mut(), Acquire);
         Self {
             top: AtomicPtr::new(top),
@@ -82,6 +92,7 @@ impl<T> SharedStack<T> {
 
     /// Create an iterator over the stack
     pub fn iter(&self) -> Iter<'_, T> {
+        std::sync::atomic::fence(SeqCst);
         Iter {
             next: AtomicPtr::new(self.top.load(SeqCst)),
             _marker: PhantomData,
@@ -113,7 +124,7 @@ impl<T> FromIterator<T> for SharedStack<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let mut stack = SharedStack::new();
         for item in iter {
-            stack.push_mut(item);
+            stack.push_get_mut(item);
         }
         stack
     }
@@ -122,7 +133,7 @@ impl<T> FromIterator<T> for SharedStack<T> {
 impl<T> Extend<T> for SharedStack<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         for item in iter {
-            self.push_mut(item);
+            self.push_get_mut(item);
         }
     }
 }
@@ -202,9 +213,9 @@ mod tests {
 
     fn stack() -> SharedStack<i32> {
         let stack = SharedStack::new();
-        stack.push(0);
-        stack.push(1);
-        stack.push(2);
+        stack.push_get(0);
+        stack.push_get(1);
+        stack.push_get(2);
         stack
     }
 
@@ -225,13 +236,13 @@ mod tests {
 
         std::thread::scope(|s| {
             s.spawn(|| {
-                stack.push(1);
-                stack.push(2);
+                stack.push_get(1);
+                stack.push_get(2);
             });
 
             s.spawn(|| {
-                stack.push(3);
-                stack.push(4);
+                stack.push_get(3);
+                stack.push_get(4);
             });
         });
 
@@ -245,13 +256,13 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(|| {
                 for _ in 0..100 {
-                    stack.push(vec![String::from("hello"), String::from("worlds")]);
+                    stack.push_get(vec![String::from("hello"), String::from("worlds")]);
                 }
             });
 
             s.spawn(|| {
                 for _ in 0..100 {
-                    stack.push(vec![String::from("hazard"), String::from("pointer")]);
+                    stack.push_get(vec![String::from("hazard"), String::from("pointer")]);
                 }
             });
         });

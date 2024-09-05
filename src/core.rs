@@ -116,6 +116,7 @@ impl<'hzrd, T> ReadHandle<'hzrd, T> {
                 ptr = new_ptr;
             }
         }
+        std::sync::atomic::fence(SeqCst);
 
         // SAFETY: This pointer is now held valid by the hazard pointer
         let value = unsafe { &*ptr };

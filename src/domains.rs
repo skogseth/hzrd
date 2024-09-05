@@ -202,9 +202,6 @@ cell_1.reclaim();
 
 // There is no need to call `HzrdCell::reclaim` on cell_2 as they both share the `GlobalDomain`.
 ```
-
-# Thread local garbage
-There is some more complexity to the garbage collection in `GlobalDomain`: Each thread holds its own local garbage, as well as access to some garbage shared between all threads. If a thread closes down with local garbage still remaining (it will attempt one last cleanup before closing), then that garbage will be moved to the shared garbage. Whenever a thread does garbage collection it will first try to clean up the local garbage it holds, followed by an attempt to clean up the shared garbage. However, since the shared garbage is locked by a [`Mutex`](`std::sync::Mutex`) it will only attempt to do soM; if the shared garbage is locked by another thread this step will be skipped.
 */
 #[derive(Clone, Copy)]
 pub struct GlobalDomain;
@@ -339,7 +336,7 @@ unsafe impl Domain for SharedDomain {
         // as others may be looking at them
         match self.hzrd_ptrs.iter().find_map(|node| node.try_acquire()) {
             Some(hzrd_ptr) => hzrd_ptr,
-            None => self.hzrd_ptrs.push(HzrdPtr::new()),
+            None => self.hzrd_ptrs.push_get(HzrdPtr::new()),
         }
     }
 
@@ -356,6 +353,7 @@ unsafe impl Domain for SharedDomain {
             return 0;
         }
 
+        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
         let hzrd_ptrs = HzrdPtrs::load(self.hzrd_ptrs.iter());
         let remaining: SharedStack<RetiredPtr> = retired_ptrs
             .into_iter()
@@ -364,7 +362,7 @@ unsafe impl Domain for SharedDomain {
 
         let new_size = remaining.iter().count();
         self.retired_ptrs.push_stack(remaining);
-        assert!(prev_size > new_size);
+        assert!(prev_size >= new_size);
         prev_size - new_size
     }
 }
