@@ -27,9 +27,7 @@ impl<T> SharedStack<T> {
         }
     }
 
-    fn __push(&self, val: T) -> *mut Node<T> {
-        let node = Box::into_raw(Box::new(Node::new(val)));
-
+    fn __push(&self, node: *mut Node<T>) {
         std::sync::atomic::fence(SeqCst);
 
         let mut old_top = self.top.load(Acquire);
@@ -46,23 +44,23 @@ impl<T> SharedStack<T> {
                 Err(current_top) => old_top = current_top,
             }
         }
-
-        node
     }
 
     /// Push a new value onto the stack
     pub fn push(&self, val: T) {
-        let _ = self.__push(val);
+        let node = Box::into_raw(Box::new(Node::new(val)));
+        let _ = self.__push(node);
     }
 
     /// Push a new value onto the stack and return a reference to the value
     pub fn push_get(&self, val: T) -> &T {
-        let node = self.__push(val);
+        let node = Box::into_raw(Box::new(Node::new(val)));
+        self.__push(node);
         unsafe { &(*node).val }
     }
 
     /// Push a new value onto the stack and return a mutable reference to the value
-    pub fn push_get_mut(&mut self, val: T) -> &mut T {
+    pub fn push_mut(&mut self, val: T) {
         let node = Box::into_raw(Box::new(Node::new(val)));
 
         let old_top = self.top.load(Acquire);
@@ -71,14 +69,13 @@ impl<T> SharedStack<T> {
         // This should always succeed
         let _exchange_result = self.top.compare_exchange(old_top, node, SeqCst, Relaxed);
         debug_assert!(_exchange_result.is_ok());
-
-        unsafe { &mut (*node).val }
     }
 
     pub fn push_stack(&self, stack: Self) {
         // TODO: This can be done much more efficiently
         for val in stack {
-            let _ = self.__push(val);
+            let node = Box::into_raw(Box::new(Node::new(val)));
+            let _ = self.__push(node);
         }
     }
 
@@ -124,7 +121,7 @@ impl<T> FromIterator<T> for SharedStack<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let mut stack = SharedStack::new();
         for item in iter {
-            stack.push_get_mut(item);
+            stack.push_mut(item);
         }
         stack
     }
@@ -133,7 +130,7 @@ impl<T> FromIterator<T> for SharedStack<T> {
 impl<T> Extend<T> for SharedStack<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         for item in iter {
-            self.push_get_mut(item);
+            self.push_mut(item);
         }
     }
 }
