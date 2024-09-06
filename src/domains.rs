@@ -13,7 +13,7 @@ The default domain used by [`HzrdCell`](`crate::HzrdCell`) is [`GlobalDomain`], 
 
 use std::cell::{Cell, UnsafeCell};
 use std::collections::LinkedList;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use crate::core::{Domain, HzrdPtr, RetiredPtr};
 use crate::stack::SharedStack;
@@ -23,7 +23,7 @@ use crate::stack::SharedStack;
 /**
 This variable can be used to configure the behavior of the domains provided by this crate
 
-The variable can only be set once, and this must happen before any operation on any of the domains. If the variable has not been configured before the first access then the default value is used (see [`Config::default`]). The variable uses a standard [`OnceLock`](`std::sync::OnceLock`), and can be used as such:
+The variable can only be set once, and this must happen before any operation on any of the domains. If the variable has not been configured before the first access, then the default value is used instead (see [`Config::default`]). The variable uses a standard [`OnceLock`](`std::sync::OnceLock`), and can be used as such:
 ```
 # use hzrd::domains::{Config, GLOBAL_CONFIG};
 let config = Config::default().caching(true);
@@ -61,7 +61,7 @@ impl Config {
     /**
     Set bulk size (default: `1`)
 
-    The bulk size is the smallest amount of elements in a list of retired pointers that will cause memory reclamation to occur. Example: If the bulk size is `4`, then a call to `reclaim` will be a no-op until there is atleast `4` retired objects.
+    The bulk size is the smallest amount of elements in a list of retired pointers that will cause memory reclamation to occur. For example, if the bulk size is `4`, then a call to `reclaim` will be a no-op unless there are atleast `4` retired objects.
 
     # Example
     ```
@@ -167,7 +167,7 @@ static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
 /**
 A globally shared, multithreaded domain
 
-This is the default domain used by `HzrdCell`, and is the recommended domain for most applications. It's based on a set of globally shared, static variables, and so there is no "constructor" for this domain. The [`GlobalDomain`] struct is  a Zero Sized Type (ZST) that acts simply as an accessor to these globally shared variables.
+This is the default domain used by `HzrdCell`, and is the recommended domain for most applications. It's based on a globally shared, static variable, and so there is no "constructor" for this domain. The [`GlobalDomain`] struct is a Zero Sized Type (ZST) that acts simply as an accessor to this globally shared variable.
 
 # Example
 ```
@@ -202,9 +202,6 @@ cell_1.reclaim();
 
 // There is no need to call `HzrdCell::reclaim` on cell_2 as they both share the `GlobalDomain`.
 ```
-
-# Thread local garbage
-There is some more complexity to the garbage collection in `GlobalDomain`: Each thread holds its own local garbage, as well as access to some garbage shared between all threads. If a thread closes down with local garbage still remaining (it will attempt one last cleanup before closing), then that garbage will be moved to the shared garbage. Whenever a thread does garbage collection it will first try to clean up the local garbage it holds, followed by an attempt to clean up the shared garbage. However, since the shared garbage is locked by a [`Mutex`](`std::sync::Mutex`) it will only attempt to do soM; if the shared garbage is locked by another thread this step will be skipped.
 */
 #[derive(Clone, Copy)]
 pub struct GlobalDomain;
@@ -232,12 +229,6 @@ unsafe impl Domain for GlobalDomain {
 
     fn reclaim(&self) -> usize {
         GLOBAL_DOMAIN.reclaim()
-    }
-
-    // -------------------------------------
-
-    fn retire(&self, ret_ptr: RetiredPtr) -> usize {
-        GLOBAL_DOMAIN.retire(ret_ptr)
     }
 }
 
@@ -293,7 +284,7 @@ let cell_2 = HzrdCell::new_in(false, Arc::clone(&custom_domain));
 #[derive(Debug)]
 pub struct SharedDomain {
     hzrd_ptrs: SharedStack<HzrdPtr>,
-    retired_ptrs: Mutex<Vec<RetiredPtr>>,
+    retired_ptrs: SharedStack<RetiredPtr>,
 }
 
 impl Default for SharedDomain {
@@ -315,42 +306,39 @@ impl SharedDomain {
     pub const fn new() -> Self {
         Self {
             hzrd_ptrs: SharedStack::new(),
-            retired_ptrs: Mutex::new(Vec::new()),
+            retired_ptrs: SharedStack::new(),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn number_of_hzrd_ptrs(&self) -> usize {
-        self.hzrd_ptrs.count()
+        self.hzrd_ptrs.iter().count()
     }
 
     #[cfg(test)]
     pub(crate) fn number_of_retired_ptrs(&self) -> usize {
-        self.retired_ptrs.lock().unwrap().len()
+        let tooketh = unsafe { self.retired_ptrs.take() };
+        let size = tooketh.iter().count();
+        self.retired_ptrs.push_stack(tooketh);
+        size
     }
 }
 
 unsafe impl Domain for SharedDomain {
     fn hzrd_ptr(&self) -> &HzrdPtr {
-        // Important to only grab shared references to the HzrdPtr's
-        // as others may be looking at them
         match self.hzrd_ptrs.iter().find_map(|node| node.try_acquire()) {
             Some(hzrd_ptr) => hzrd_ptr,
-            None => self.hzrd_ptrs.push(HzrdPtr::new()),
+            None => self.hzrd_ptrs.push_get(HzrdPtr::new()),
         }
     }
 
     fn just_retire(&self, ret_ptr: RetiredPtr) {
-        self.retired_ptrs.lock().unwrap().push(ret_ptr);
+        self.retired_ptrs.push(ret_ptr);
     }
 
     fn reclaim(&self) -> usize {
-        // Try to aquire lock, exit if it is taken
-        let Ok(mut retired_ptrs) = self.retired_ptrs.try_lock() else {
-            return 0;
-        };
-
-        let prev_size = retired_ptrs.len();
+        let retired_ptrs = unsafe { self.retired_ptrs.take() };
+        let prev_size = retired_ptrs.iter().count();
 
         // Check if it's too small to reclaim
         if prev_size < global_config().bulk_size {
@@ -358,30 +346,15 @@ unsafe impl Domain for SharedDomain {
         }
 
         let hzrd_ptrs = HzrdPtrs::load(self.hzrd_ptrs.iter());
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
-        prev_size - retired_ptrs.len()
-    }
+        let remaining: SharedStack<RetiredPtr> = retired_ptrs
+            .into_iter()
+            .filter(|retired_ptr| hzrd_ptrs.contains(retired_ptr.addr()))
+            .collect();
 
-    // -------------------------------------
-
-    // Override this for (hopefully) improved performance
-    fn retire(&self, ret_ptr: RetiredPtr) -> usize {
-        // Grab the lock to retired pointers
-        let mut retired_ptrs = self.retired_ptrs.lock().unwrap();
-
-        // And retire the given pointer
-        retired_ptrs.push(ret_ptr);
-
-        let prev_size = retired_ptrs.len();
-
-        // Check if it's too small to reclaim
-        if prev_size < global_config().bulk_size {
-            return 0;
-        }
-
-        let hzrd_ptrs = HzrdPtrs::load(self.hzrd_ptrs.iter());
-        retired_ptrs.retain(|p| hzrd_ptrs.contains(p.addr()));
-        prev_size - retired_ptrs.len()
+        let new_size = remaining.iter().count();
+        self.retired_ptrs.push_stack(remaining);
+        assert!(prev_size >= new_size);
+        prev_size - new_size
     }
 }
 

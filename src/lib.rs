@@ -5,44 +5,38 @@
 /*!
 This crate provides a safe API for shared mutability using hazard pointers for memory reclamation.
 
+# Hazard pointers
+
+Hazard pointers is a strategy for controlled memory reclamation in multithreaded contexts. All readers/writers have shared access to some data, as well as a collection of garbage, and a list of hazard pointers. Whenever you read the value of the data, you actually get a reference to it, which you also store in one of the hazard pointers. Writing to the data is done by swapping out the old value for a new one; the old value is then "retired" (thrown in the pile of garbage). Retired values are only reclaimed if no hazard pointers contain their address, in this way the hazard pointers end up protecting values read from becoming invalid.
+
 # HzrdCell
 The core API of this crate is the [`HzrdCell`], which provides an API reminiscent to that of the standard library's [`Cell`](std::cell::Cell)-type. However, [`HzrdCell`] allows shared mutation across multiple threads.
 
-The main advantage of [`HzrdCell`], compared to something like a [`Mutex`](std::sync::Mutex), is that reading and writing to the value is lock-free. This is offset by an increased memory use, an significant overhead and additional indirection. Here is an example of [`HzrdCell`] in use.
-
 ```
-use std::time::Duration;
-use std::thread;
-
 use hzrd::HzrdCell;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum State {
-    Idle,
-    Running,
-    Finished,
-}
+let cell = HzrdCell::new(false);
 
-let state = HzrdCell::new(State::Idle);
-
-thread::scope(|s| {
+std::thread::scope(|s| {
     s.spawn(|| {
-        thread::sleep(Duration::from_millis(1));
-        match state.get() {
-            State::Idle => println!("Waiting is boring, ugh"),
-            State::Running => println!("Let's go!"),
-            State::Finished => println!("We got here too late :/"),
+        // Loop until the value is true
+        while !cell.get() {
+            std::hint::spin_loop();
         }
+
+        // And then set it back to false!
+        cell.set(false);
     });
 
     s.spawn(|| {
-        state.set(State::Running);
-        thread::sleep(Duration::from_millis(1));
-        state.set(State::Finished);
+        // Set the value to true
+        cell.set(true);
+
+        // And then read the value!
+        // This might print either `true` or `false`
+        println!("{}", cell.get());
     });
 });
-
-assert_eq!(state.get(), State::Finished);
 ```
 */
 
@@ -55,8 +49,6 @@ pub use crate::domains::{GlobalDomain, LocalDomain, SharedDomain};
 
 mod private {
     // We want to test the code in the readme
-    //
-    // TODO: Data race in the README (yeah, for real)
     #![doc = include_str!("../README.md")]
 }
 
