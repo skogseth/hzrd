@@ -167,7 +167,7 @@ static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
 /**
 A globally shared, multithreaded domain
 
-This is the default domain used by `HzrdCell`, and is the recommended domain for most applications. It's based on a set of globally shared, static variables, and so there is no "constructor" for this domain. The [`GlobalDomain`] struct is  a Zero Sized Type (ZST) that acts simply as an accessor to these globally shared variables.
+This is the default domain used by `HzrdCell`, and is the recommended domain for most applications. It's based on a 'globally shared, static variable, and so there is no "constructor" for this domain. The [`GlobalDomain`] struct is  a Zero Sized Type (ZST) that acts simply as an accessor to this globally shared variable.
 
 # Example
 ```
@@ -229,12 +229,6 @@ unsafe impl Domain for GlobalDomain {
 
     fn reclaim(&self) -> usize {
         GLOBAL_DOMAIN.reclaim()
-    }
-
-    // -------------------------------------
-
-    fn retire(&self, ret_ptr: RetiredPtr) -> usize {
-        GLOBAL_DOMAIN.retire(ret_ptr)
     }
 }
 
@@ -332,8 +326,6 @@ impl SharedDomain {
 
 unsafe impl Domain for SharedDomain {
     fn hzrd_ptr(&self) -> &HzrdPtr {
-        // Important to only grab shared references to the HzrdPtr's
-        // as others may be looking at them
         match self.hzrd_ptrs.iter().find_map(|node| node.try_acquire()) {
             Some(hzrd_ptr) => hzrd_ptr,
             None => self.hzrd_ptrs.push_get(HzrdPtr::new()),
@@ -353,7 +345,6 @@ unsafe impl Domain for SharedDomain {
             return 0;
         }
 
-        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
         let hzrd_ptrs = HzrdPtrs::load(self.hzrd_ptrs.iter());
         let remaining: SharedStack<RetiredPtr> = retired_ptrs
             .into_iter()
