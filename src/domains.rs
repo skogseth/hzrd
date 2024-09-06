@@ -23,7 +23,7 @@ use crate::stack::SharedStack;
 /**
 This variable can be used to configure the behavior of the domains provided by this crate
 
-The variable can only be set once, and this must happen before any operation on any of the domains. If the variable has not been configured before the first access then the default value is used (see [`Config::default`]). The variable uses a standard [`OnceLock`](`std::sync::OnceLock`), and can be used as such:
+The variable can only be set once, and this must happen before any operation on any of the domains. If the variable has not been configured before the first access, then the default value is used instead (see [`Config::default`]). The variable uses a standard [`OnceLock`](`std::sync::OnceLock`), and can be used as such:
 ```
 # use hzrd::domains::{Config, GLOBAL_CONFIG};
 let config = Config::default().caching(true);
@@ -61,7 +61,7 @@ impl Config {
     /**
     Set bulk size (default: `1`)
 
-    The bulk size is the smallest amount of elements in a list of retired pointers that will cause memory reclamation to occur. Example: If the bulk size is `4`, then a call to `reclaim` will be a no-op until there is atleast `4` retired objects.
+    The bulk size is the smallest amount of elements in a list of retired pointers that will cause memory reclamation to occur. For example, if the bulk size is `4`, then a call to `reclaim` will be a no-op unless there are atleast `4` retired objects.
 
     # Example
     ```
@@ -167,7 +167,7 @@ static GLOBAL_DOMAIN: SharedDomain = SharedDomain::new();
 /**
 A globally shared, multithreaded domain
 
-This is the default domain used by `HzrdCell`, and is the recommended domain for most applications. It's based on a 'globally shared, static variable, and so there is no "constructor" for this domain. The [`GlobalDomain`] struct is  a Zero Sized Type (ZST) that acts simply as an accessor to this globally shared variable.
+This is the default domain used by `HzrdCell`, and is the recommended domain for most applications. It's based on a globally shared, static variable, and so there is no "constructor" for this domain. The [`GlobalDomain`] struct is a Zero Sized Type (ZST) that acts simply as an accessor to this globally shared variable.
 
 # Example
 ```
