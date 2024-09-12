@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use std::thread;
 
-use hzrd::{HzrdCell, SharedDomain};
+use hzrd::domains::SharedDomain;
+use hzrd::HzrdCell;
 
 fn main() {
     let domain = Arc::new(SharedDomain::new());

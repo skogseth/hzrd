@@ -91,7 +91,7 @@ fn holding_handles(domain: impl Domain + Send + Sync) {
 }
 
 mod global_domain {
-    use hzrd::GlobalDomain;
+    use hzrd::domains::GlobalDomain;
 
     #[test]
     fn read_unchecked() {
@@ -115,7 +115,7 @@ mod global_domain {
 }
 
 mod shared_domain {
-    use hzrd::SharedDomain;
+    use hzrd::domains::SharedDomain;
 
     #[test]
     fn read_unchecked() {
