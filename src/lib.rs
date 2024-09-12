@@ -67,7 +67,6 @@ Each [`HzrdCell`] belongs to a given domain, which contains the set of hazard po
 
 See the [crate-level documentation](crate) for a "getting started" guide.
 */
-#[derive(Debug)]
 pub struct HzrdCell<T, D = GlobalDomain> {
     value: AtomicPtr<T>,
     domain: D,

@@ -50,7 +50,6 @@ cell.set(Vec::new());
 assert_eq!(handle[..], [1, 2, 3, 4]);
 ```
 */
-#[derive(Debug)]
 pub struct ReadHandle<'hzrd, T> {
     value: &'hzrd T,
     hzrd_ptr: &'hzrd HzrdPtr,
@@ -154,7 +153,7 @@ A trait describing a hazard pointer domain
 A hazard pointer domain contains a set of given hazard pointers. A value protected by hazard pointers belong to a given domain. When the value is swapped the "swapped-out-value" should be retired to the domain associated with the value, such that it is properly cleaned up when there are no more hazard pointers guarding the reclamation of the value.
 
 # Safety
-Implementing `Domain` is marked `unsafe` as a correct implementation is relied upon by the types of this crate. A sound implementation of `Domain` requires the type to only free [`RetiredPtr`]s passed in via [`retire`](`Domain::retire`)/[`just_retire`](`Domain::just_retire`) if no [`HzrdPtr`]s given out by this function is not protecting the value. A good implementation should free these pointers when both [`reclaim`](`Domain::reclaim`) is called, as well as after updating the value in [`retire`](`Domain::retire`).
+Implementing `Domain` is `unsafe`, as a correct implementation is relied upon by the types of this crate. A sound implementation of `Domain` requires the type to only free [`RetiredPtr`]s passed in via [`retire`](`Domain::retire`)/[`just_retire`](`Domain::just_retire`) if no [`HzrdPtr`]s given out by this function are protecting the value. A good implementation should free these pointers when [`reclaim`](`Domain::reclaim`) is called, as well as after updating the value in [`retire`](`Domain::retire`).
 */
 pub unsafe trait Domain {
     /**
@@ -279,7 +278,7 @@ impl Default for HzrdPtr {
 
 impl std::fmt::Debug for HzrdPtr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HzrdPtr({:#x})", self.0.load(Relaxed))
+        write!(f, "HzrdPtr({:#X})", self.0.load(Relaxed))
     }
 }
 
@@ -324,7 +323,7 @@ impl Drop for RetiredPtr {
 
 impl std::fmt::Debug for RetiredPtr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RetiredPtr({:#x})", self.addr())
+        write!(f, "RetiredPtr({:#X})", self.addr())
     }
 }
 
