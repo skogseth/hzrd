@@ -3,11 +3,11 @@
 //#![warn(rustdoc::missing_doc_code_examples)]
 
 /*!
-This crate provides a safe API for shared mutability using hazard pointers for memory reclamation.
+This crate provides a safe API for shared mutability, using hazard pointers for memory reclamation.
 
 # Hazard pointers
 
-Hazard pointers is a strategy for controlled memory reclamation in multithreaded contexts. All readers/writers have shared access to some data, as well as a collection of garbage, and a list of hazard pointers. Whenever you read the value of the data, you actually get a reference to it, which you also store in one of the hazard pointers. Writing to the data is done by swapping out the old value for a new one; the old value is then "retired" (thrown in the pile of garbage). Retired values are only reclaimed if no hazard pointers contain their address, in this way the hazard pointers end up protecting values read from becoming invalid.
+Hazard pointers is a strategy for controlled memory reclamation in multithreaded contexts. All readers/writers have shared access to some data, as well as a collection of garbage, and a list of hazard pointers. Whenever you read the value of the data you get a reference to it, which you also store in one of the hazard pointers. Writing to the data is done by swapping out the old value for a new one; the old value is then "retired" (thrown in the pile of garbage). Retired values are only reclaimed if no hazard pointers contain their address. In this way the hazard pointers end up protecting any references from becoming invalid.
 
 # HzrdCell
 The core API of this crate is the [`HzrdCell`], which provides an API reminiscent to that of the standard library's [`Cell`](std::cell::Cell)-type. However, [`HzrdCell`] allows shared mutation across multiple threads.
@@ -45,8 +45,6 @@ mod stack;
 pub mod core;
 pub mod domains;
 
-pub use crate::domains::{GlobalDomain, LocalDomain, SharedDomain};
-
 mod private {
     // We want to test the code in the readme
     #![doc = include_str!("../README.md")]
@@ -58,6 +56,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering::*};
 
 use crate::core::{Action, Domain, HzrdPtr, ReadHandle, RetiredPtr};
+use crate::domains::GlobalDomain;
 
 // -------------------------------------
 
@@ -68,7 +67,6 @@ Each [`HzrdCell`] belongs to a given domain, which contains the set of hazard po
 
 See the [crate-level documentation](crate) for a "getting started" guide.
 */
-#[derive(Debug)]
 pub struct HzrdCell<T, D = GlobalDomain> {
     value: AtomicPtr<T>,
     domain: D,
@@ -78,7 +76,7 @@ impl<T: 'static> HzrdCell<T> {
     /**
     Construct a new [`HzrdCell`] with the given value in the default domain.
 
-    The default domain is a globally shared domain, see [`GlobalDomain`] for more information on this domain. This is the recommended way for constructing [`HzrdCell`]s unless you really know what you're doing, in which case you can use [`HzrdCell::new_in`] to construct in a custom domain.
+    The default domain is a globally shared domain, see [`GlobalDomain`] for more information on this domain. This is the recommended way for constructing [`HzrdCell`]s, unless you really know what you're doing, in which case you can use [`HzrdCell::new_in`] to construct a new cell in a custom domain.
 
     # Note
     The value held in the cell will be allocated on the heap via [`Box`], and is stored seperate from the metadata associated with the [`HzrdCell`].
@@ -99,7 +97,11 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     /**
     Set the value of the cell
 
-    This method may block after the value has been set.
+    This will perform the following operations (in this order):
+    - Allocate the new value on the heap using [`Box`]
+    - Swap out the old value for the new value
+    - Retire the old value
+    - Reclaim retired values, if possible
 
     # Example
     ```
@@ -115,9 +117,7 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
         self.domain.retire(old_ptr);
     }
 
-    /// Set the value of the cell, without reclaiming memory
-    ///
-    /// This method may block after the value has been set.
+    /// Set the value of the cell without attempting to reclaim memory
     pub fn just_set(&self, value: T) {
         // SAFETY: We retire the pointer in a valid domain
         let old_ptr = unsafe { self.swap(Box::new(value)) };
@@ -125,11 +125,11 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     }
 
     /**
-    Get a handle holding a reference to the current value held by the `HzrdCell`
+    Get a handle holding a reference to the current value held by the [`HzrdCell`]
 
     The functionality of this is somewhat similar to a [`MutexGuard`](std::sync::MutexGuard), except the [`ReadHandle`] only accepts reading the value. There is no locking mechanism needed to grab this handle, although there might be a short wait if the read overlaps with a write.
 
-    The [`ReadHandle`] acquired holds a shared reference to the value of the [`HzrdCell`] as it was when the [`read`](Self::read) function was called. If the value of the [`HzrdCell`] is changed after the [`ReadHandle`] is acquired its new value is not reflected in the value of the [`ReadHandle`], the old value is held alive atleast until all references are dropped. See the documentation of [`ReadHandle`] for more information.
+    The [`ReadHandle`] acquired holds a shared reference to the value of the [`HzrdCell`] as it was when the [`read`](Self::read) function was called. If the value of the [`HzrdCell`] is changed after the [`ReadHandle`] is acquired its new value is not reflected in the value of the [`ReadHandle`]. The hazard pointer held by the handle will keep the old value alive. See the documentation of [`ReadHandle`] for more information.
 
     # Example
     ```
@@ -173,23 +173,6 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     }
 
     /**
-    Read the contained value and clone it (requires type to be [`Clone`])
-
-    # Example
-    ```
-    # use hzrd::HzrdCell;
-    let cell = HzrdCell::new([1, 2, 3]);
-    assert_eq!(cell.cloned(), [1, 2, 3]);
-    ```
-    */
-    pub fn cloned(&self) -> T
-    where
-        T: Clone,
-    {
-        self.read().clone()
-    }
-
-    /**
     Reclaim available memory, if possible
 
     # Example
@@ -210,10 +193,7 @@ impl<T: 'static, D: Domain> HzrdCell<T, D> {
     /**
     Construct a reader to the current cell
 
-    Constructing a reader can be helpful (and more performant) when doing consecutive reads.
-    The reader will hold a [`HzrdPtr`] which will be reused for each read. The reader exposes
-    a similar API to [`HzrdCell`], with the exception of "write-action" such as
-    [`HzrdCell::set`] & [`HzrdCell::reclaim`]. See [`HzrdReader for more details`].
+    Constructing a reader can be helpful (and more performant) when doing consecutive reads, as the reader will hold a [`HzrdPtr`] which will be reused for each read. The reader exposes a similar API to [`HzrdCell`], with the exception of "write-actions" such as [`HzrdCell::set`] & [`HzrdCell::reclaim`]. See [`HzrdReader`] for more details.
 
     # Example
     ```
@@ -244,7 +224,8 @@ impl<T: 'static, D> HzrdCell<T, D> {
     The value held in the cell will be allocated on the heap via [`Box`], and is stored seperate from the metadata associated with the [`HzrdCell`].
 
     ```
-    # use hzrd::{HzrdCell, SharedDomain};
+    # use hzrd::domains::SharedDomain;
+    # use hzrd::HzrdCell;
     let cell = HzrdCell::new_in(0, SharedDomain::new());
     ```
     */
@@ -253,7 +234,8 @@ impl<T: 'static, D> HzrdCell<T, D> {
         Self { value, domain }
     }
 
-    /// SAFETY: Requires correct handling of RetiredPtr
+    /// # SAFETY
+    /// Requires correct handling of [`RetiredPtr`]
     unsafe fn swap(&self, boxed: Box<T>) -> RetiredPtr {
         let new_ptr = Box::into_raw(boxed);
 
@@ -313,9 +295,7 @@ std::thread::scope(|s| {
 ```
 
 # The elephant in the room
-The keen eye might have observed some of the "funkiness" with [`HzrdReader`] in the previous example: Reading the value of from the reader required it to be mutable, whilst reading/writing to the cell did not. Exclusivity is usually associated with mutation, but for the [`HzrdReader`] this is not the case. The reason that reading via a [`HzrdReader`] require an exclusive/mutable reference is that the returned [`ReadHandle`] requires exclusive access to the internal [`HzrdPtr`].
-
-Another example, here using the [`read`](HzrdReader::read) function to acquire a [`ReadHandle`] to the underlying value, as it doesn't implement copy:
+The keen eye might have observed some of the "funkiness" with [`HzrdReader`] in the previous example: Reading the value requires a mutable/exclusive reference, and thus the reader must be marked as `mut`. Note also that this was not the case for reading, or even writing (!), to the cell itself. Exclusivity is usually associated with mutation, but for the [`HzrdReader`] this is not the case. The reason that reading via a [`HzrdReader`] requires a mutable/exclusive reference is that the reader holds access to only a single hazard pointer. This hazard pointer is used when you read a value, so as long as you hold on the value read that hazard pointer is busy.
 
 ```
 # use hzrd::{HzrdCell, HzrdReader};
@@ -325,7 +305,8 @@ let cell = HzrdCell::new([0, 1, 2]);
 // NOTE: The reader must be marked as mutable
 let mut reader = cell.reader();
 
-// NOTE: Associated function syntax used to make the requirement explicit
+// NOTE: We use associated function syntax here to
+//       emphasize the need for a mutable reference
 let handle = HzrdReader::read(&mut reader);
 assert_eq!(handle[0], 0);
 ```
@@ -373,24 +354,6 @@ impl<T> HzrdReader<'_, T> {
     {
         *self.read()
     }
-
-    /**
-    Read the contained value and clone it (requires type to be [`Clone`])
-
-    # Example
-    ```
-    # use hzrd::HzrdCell;
-    let cell = HzrdCell::new(vec![1, 2, 3]);
-    let mut reader = cell.reader();
-    assert_eq!(reader.cloned(), [1, 2, 3]);
-    ```
-    */
-    pub fn cloned(&mut self) -> T
-    where
-        T: Clone,
-    {
-        self.read().clone()
-    }
 }
 
 impl<T> Drop for HzrdReader<'_, T> {
@@ -413,7 +376,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use super::*;
+    use crate::domains::{LocalDomain, SharedDomain};
+    use crate::HzrdCell;
 
     #[test]
     fn drop_test() {
@@ -490,7 +454,7 @@ mod tests {
         });
 
         cell.reclaim();
-        assert_eq!(cell.cloned(), "Hello world!");
+        assert_eq!(cell.read().clone(), "Hello world!");
     }
 
     #[test]

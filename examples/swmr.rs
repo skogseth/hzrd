@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use hzrd::{HzrdCell, LocalDomain};
+use hzrd::domains::LocalDomain;
+use hzrd::HzrdCell;
 
 fn main() {
     let cell = HzrdCell::new_in(0, LocalDomain::new());

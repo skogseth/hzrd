@@ -1,6 +1,7 @@
 use std::sync::Barrier;
 
-use hzrd::{HzrdCell, LocalDomain};
+use hzrd::domains::LocalDomain;
+use hzrd::HzrdCell;
 
 fn back_and_forth(n: usize) {
     let cell = HzrdCell::new(None);

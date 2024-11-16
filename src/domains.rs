@@ -171,7 +171,8 @@ This is the default domain used by `HzrdCell`, and is the recommended domain for
 
 # Example
 ```
-use hzrd::{HzrdCell, GlobalDomain};
+use hzrd::domains::GlobalDomain;
+use hzrd::HzrdCell;
 
 // We here explicitly mark the use of the `GlobalDomain`
 let cell_1 = HzrdCell::new_in(0, GlobalDomain);
@@ -246,7 +247,8 @@ Shared, multithreaded domain
 A shared domain can, in contrast to [`GlobalDomain`], be owned by the [`HzrdCell`](`crate::HzrdCell`) itself. This means the cell will hold exclusive access to it, and the garbage associated with the domain will be cleaned up when the cell is dropped. This can be abused to delay all garbage collection for some limited time in order to do it all in bulk:
 
 ```
-use hzrd::{HzrdCell, SharedDomain};
+use hzrd::domains::SharedDomain;
+use hzrd::HzrdCell;
 
 let cell = HzrdCell::new_in(0, SharedDomain::new());
 
@@ -272,7 +274,8 @@ Another interesting option with [`SharedDomain`] is to have the domain stored in
 ```
 use std::sync::Arc;
 
-use hzrd::{HzrdCell, SharedDomain};
+use hzrd::domains::SharedDomain;
+use hzrd::HzrdCell;
 
 let custom_domain = Arc::new(SharedDomain::new());
 let cell_1 = HzrdCell::new_in(0, Arc::clone(&custom_domain));
@@ -299,7 +302,7 @@ impl SharedDomain {
 
     # Example
     ```
-    # use hzrd::SharedDomain;
+    # use hzrd::domains::SharedDomain;
     let domain = SharedDomain::new();
     ```
     */
@@ -385,7 +388,8 @@ The main use case for this is when only a single thread needs to be able to writ
 ```
 use std::sync::Barrier;
 
-use hzrd::{HzrdCell, LocalDomain};
+use hzrd::domains::LocalDomain;
+use hzrd::HzrdCell;
 
 const N_THREADS: usize = 10;
 
@@ -446,7 +450,7 @@ impl LocalDomain {
 
     # Example
     ```
-    # use hzrd::LocalDomain;
+    # use hzrd::domains::LocalDomain;
     let domain = LocalDomain::new();
     ```
     */
